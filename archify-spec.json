@@ -1,0 +1,77 @@
+{
+  "meta": {
+    "title": "Agentic Software Factory Message Sequence Diagram",
+    "type": "sequence",
+    "quality_profile": "showcase",
+    "participants": [
+      "User",
+      "Adapter",
+      "Orchestrator",
+      "DB",
+      "Worker",
+      "Harness",
+      "Sandbox"
+    ],
+    "mainPath": [
+      "User->>Adapter: @asf generate feature-x",
+      "Adapter->>Orchestrator: SubmitTask(generate, spec-id)",
+      "Orchestrator->>DB: Persist Task (Pending)",
+      "Orchestrator->>Worker: Dispatch Task",
+      "Worker->>DB: Update Status (Running)",
+      "Worker->>Harness: Execute(spec-id)",
+      "Harness->>Harness: Load Context & Spec",
+      "Harness->>Sandbox: Execute Verification (Build/Test)",
+      "Sandbox-->>Harness: Results/Errors",
+      "Harness-->>Worker: Final Result",
+      "Worker->>DB: Update Status (Completed)",
+      "Worker-->>Orchestrator: Task Finished",
+      "Orchestrator-->>Adapter: Notify Completion",
+      "Adapter-->>User: Result: PR Created / Feature Verified"
+    ],
+    "sideBranches": [
+      {
+        "from": "Harness->>Harness: Load Context & Spec",
+        "to": "Harness->>Harness: Generate Agent Prompt",
+        "label": "Prompt Generation"
+      },
+      {
+        "from": "Harness->>Sandbox: Execute Verification (Build/Test)",
+        "to": "Harness-->>Harness: Results/Errors",
+        "label": "Verification Results"
+      },
+      {
+        "from": "Harness-->>Harness: Results/Errors",
+        "label": "Retry Loop",
+        "to": "Harness->>Worker: Final Result",
+        "condition": "if errors and retries < 3"
+      }
+    ],
+    "labels": {
+      "mainPath": [
+        { "node": "User", "text": "External Request" },
+        { "node": "Adapter", "text": "Integration Adapter" },
+        { "node": "Orchestrator", "text": "Factory Orchestrator" },
+        { "node": "DB", "text": "SQLite Persistence" },
+        { "node": "Worker", "text": "Agent Worker" },
+        { "node": "Harness", "text": "AI-TDD Harness" },
+        { "node": "Sandbox", "text": "Docker Sandbox" }
+      ]
+    },
+    "animation": "trace",
+    "views": [
+      {
+        "id": "overview",
+        "title": "Full Message Flow",
+        "nodes": ["User", "Adapter", "Orchestrator", "DB", "Worker", "Harness", "Sandbox"]
+      },
+      {
+        "id": "verification-loop",
+        "title": "AI-TDD Verification Loop",
+        "nodes": ["Harness", "Sandbox"],
+        "focusNodes": ["Build", "Test", "Lint", "Constraints"]
+      }
+    ]
+  },
+  "subject": "message-sequence-diagram",
+  "evidence": "ASF factory-flow documentation"
+}

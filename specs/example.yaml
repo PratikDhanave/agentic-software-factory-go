@@ -1,0 +1,48 @@
+# Specification Template
+id: "spec-001"
+version: "1.0"
+title: "Example Specification"
+description: "A brief description of what this specification achieves"
+intent:
+  goal: "Clear, measurable goal for the agent"
+  context: "Background context and constraints"
+  success_criteria:
+    - "Criterion 1: measurable outcome"
+    - "Criterion 2: another measurable outcome"
+  anti_goals:
+    - "What to explicitly avoid"
+constraints:
+  - id: "c1"
+    type: "must"
+    description: "Hard constraint the agent must follow"
+    validator: "code to validate this constraint"
+  - id: "c2"
+    type: "must_not"
+    description: "What the agent must not do"
+inputs:
+  input_name:
+    type: "string"
+    description: "Description of this input"
+    required: true
+    default: "default value"
+outputs:
+  output_name:
+    type: "string"
+    description: "Expected output"
+steps:
+  - id: "step1"
+    name: "First Step"
+    description: "What this step does"
+    tool: "tool_name"
+    inputs:
+      key: "value"
+    depends_on: []
+    validation: "how to validate this step succeeded"
+  - id: "step2"
+    name: "Second Step"
+    description: "What this step does"
+    tool: "tool_name"
+    inputs:
+      key: "value"
+    depends_on: ["step1"]
+    validation: "how to validate this step succeeded"

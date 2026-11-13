@@ -53,11 +53,83 @@ func main() {
 		runFactory(workingDir, os.Args[2:])
 	case "mcp":
 		runMCPServer(workingDir, os.Args[2:])
+	case "web":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: asf web <serve|generate> [args...]")
+			os.Exit(1)
+		}
+		runWebCommand(workingDir, os.Args[2:])
+	case "integration":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: asf integration <list|status> [args...]")
+			os.Exit(1)
+		}
+		runIntegrationCommand(workingDir, os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
+		os.Exit(1)
+	}
+}
+
+// runWebCommand handles the web subcommand
+func runWebCommand(workingDir string, args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: asf web <serve|generate> [args...]")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "serve":
+		if len(args) < 2 {
+			fmt.Println("Usage: asf web serve [port]")
+			os.Exit(1)
+		}
+		port := "8080"
+		if len(args) >= 3 {
+			port = args[2]
+		}
+		fmt.Printf("Starting ASF web server on port %s...\n", port)
+		// TODO: Implement web server - serve the web UI from web/static and web/templates
+	case "generate":
+		if len(args) < 2 {
+			fmt.Println("Usage: asf web generate [output-dir]")
+			os.Exit(1)
+		}
+		outputDir := args[1]
+		fmt.Printf("Generating web assets to %s...\n", outputDir)
+		// TODO: Generate web assets from templates
+	default:
+		fmt.Printf("Unknown web subcommand: %s\n", args[0])
+		fmt.Println("Available subcommands: serve, generate")
+		os.Exit(1)
+	}
+}
+
+// runIntegrationCommand handles the integration subcommand
+func runIntegrationCommand(workingDir string, args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: asf integration <list|status> [args...]")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "list":
+		fmt.Println("Listing integrations...")
+		// TODO: List registered integrations from persistence
+	case "status":
+		if len(args) < 2 {
+			fmt.Println("Usage: asf integration status [integration-name]")
+			os.Exit(1)
+		}
+		name := args[1]
+		fmt.Printf("Checking status of integration: %s...\n", name)
+		// TODO: Check status of specific integration
+	default:
+		fmt.Printf("Unknown integration subcommand: %s\n", args[0])
+		fmt.Println("Available subcommands: list, status")
 		os.Exit(1)
 	}
 }
@@ -87,6 +159,12 @@ Commands:
     submit <type> <spec-id> Submit a task to the factory
   mcp               Start MCP server for headless API access
     start [addr]      Start MCP server (default: localhost:8080)
+  web               Web UI and asset generation
+    serve             Start web server to serve the UI
+    generate          Generate web assets from templates
+  integration       Integration adapters
+    list              List registered integrations
+    status            Check integration status
   help              Show this help
 
 Examples:
@@ -98,6 +176,10 @@ Examples:
   asf factory start
   asf factory submit generate spec-001
   asf mcp start
+  asf web serve
+  asf web generate ./web-output
+  asf integration list
+  asf integration status github
 `)
 }
 
