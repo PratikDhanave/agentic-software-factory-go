@@ -20,7 +20,11 @@ func main() {
 	fmt.Println()
 
 	ctx := context.Background()
-	fo := factory.NewFactoryOrchestrator(workingDir, 4)
+	fo, err := factory.NewFactoryOrchestrator(workingDir, 4)
+	if err != nil {
+		fmt.Printf("Factory creation error: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Println("Starting factory with 4 workers...")
 	if err := fo.Start(ctx); err != nil {

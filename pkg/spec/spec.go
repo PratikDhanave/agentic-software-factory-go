@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -307,7 +306,7 @@ func (v *SpecValidator) ValidateOutput(outputs map[string]interface{}) []string 
 	var errors []string
 
 	for name, expected := range v.spec.Outputs {
-		actual, ok := outputs[name]
+		_, ok := outputs[name]
 		if !ok {
 			errors = append(errors, fmt.Sprintf("missing required output: %s", name))
 			continue

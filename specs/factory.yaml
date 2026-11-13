@@ -1,0 +1,32 @@
+# Example Factory Definition (specs/factory.yaml)
+factory:
+  name: "go-agentic-factory"
+  version: "1.0"
+
+  agents:
+    - id: "gen-agent"
+      role: "code-generator"
+      capabilities: ["generate", "refactor"]
+      model: "claude-sonnet-5"
+    - id: "verify-agent"
+      role: "validator"
+      capabilities: ["verify"]
+      model: "claude-haiku-4-5"
+
+  workflows:
+    - id: "code-improvement"
+      steps:
+        - name: "generate-code"
+          agent: "gen-agent"
+        - name: "run-verification"
+          agent: "verify-agent"
+          validation: "harness"
+        - name: "review"
+          agent: "gen-agent"
+
+  runners:
+    - id: "default-sandbox"
+      image: "golang:1.23-alpine"
+      work_dir: "/workspace"
+      read_only: false
+      timeout: "300s"

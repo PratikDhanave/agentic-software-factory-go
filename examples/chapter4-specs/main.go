@@ -69,7 +69,7 @@ func main() {
 	// Demo: Validator
 	if len(specs) > 0 {
 		for _, s := range specs {
-			validator := spec.NewSpecValidator(s)
+			_ = spec.NewSpecValidator(s)
 			fmt.Printf("\n=== VALIDATOR FOR %s ===\n", s.ID)
 			fmt.Println("Would validate agent outputs against specification")
 		}

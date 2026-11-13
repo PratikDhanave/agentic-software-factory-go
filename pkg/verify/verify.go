@@ -3,21 +3,18 @@ package verify
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
 
 // VerificationEngine runs AI-TDD verification loops
 type VerificationEngine struct {
-	workingDir     string
-	timeout        time.Duration
-	goTestTimeout  time.Duration
-	lintTimeout    time.Duration
-	maxRetries     int
-	harnessManager *HarnessManager
+	WorkingDir     string
+	Timeout        time.Duration
+	GoTestTimeout  time.Duration
+	LintTimeout    time.Duration
+	MaxRetries     int
 }
 
 // VerificationResult represents the outcome of a verification run
@@ -41,21 +38,14 @@ type VerificationError struct {
 	Severity    string // "error", "warning"
 }
 
-// HarnessManager coordinates the full verification harness
-type HarnessManager struct {
-	contextEngine *ContextEngine
-	specEngine    *SpecEngine
-	verifier      *VerificationEngine
-}
-
 // NewVerificationEngine creates a new verification engine
 func NewVerificationEngine(workingDir string) *VerificationEngine {
 	return &VerificationEngine{
-		workingDir:    workingDir,
-		timeout:       5 * time.Minute,
-		goTestTimeout: 2 * time.Minute,
-		lintTimeout:   1 * time.Minute,
-		maxRetries:    3,
+		WorkingDir:    workingDir,
+		Timeout:       5 * time.Minute,
+		GoTestTimeout: 2 * time.Minute,
+		LintTimeout:   1 * time.Minute,
+		MaxRetries:    3,
 	}
 }
 
@@ -99,7 +89,7 @@ func (e *VerificationEngine) RunVerification(ctx context.Context, specPath strin
 // verifyBuild verifies the code compiles
 func (e *VerificationEngine) verifyBuild(ctx context.Context, result *VerificationResult) error {
 	cmd := exec.CommandContext(ctx, "go", "build", "./...")
-	cmd.Dir = e.workingDir
+	cmd.Dir = e.WorkingDir
 	output, err := cmd.CombinedOutput()
 	result.BuildOutput = string(output)
 
@@ -112,11 +102,11 @@ func (e *VerificationEngine) verifyBuild(ctx context.Context, result *Verificati
 
 // verifyTests runs go test
 func (e *VerificationEngine) verifyTests(ctx context.Context, result *VerificationResult) error {
-	testCtx, cancel := context.WithTimeout(ctx, e.goTestTimeout)
+	testCtx, cancel := context.WithTimeout(ctx, e.GoTestTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(testCtx, "go", "test", "-v", "./...")
-	cmd.Dir = e.workingDir
+	cmd.Dir = e.WorkingDir
 	output, err := cmd.CombinedOutput()
 	result.TestOutput = string(output)
 
@@ -136,11 +126,11 @@ func (e *VerificationEngine) verifyLint(ctx context.Context, result *Verificatio
 		return nil
 	}
 
-	lintCtx, cancel := context.WithTimeout(ctx, e.lintTimeout)
+	lintCtx, cancel := context.WithTimeout(ctx, e.LintTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(lintCtx, "golangci-lint", "run", "./...")
-	cmd.Dir = e.workingDir
+	cmd.Dir = e.WorkingDir
 	output, err := cmd.CombinedOutput()
 	result.LintOutput = string(output)
 

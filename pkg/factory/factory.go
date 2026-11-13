@@ -2,13 +2,15 @@ package factory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
+	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/persistence"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
 	"github.com/google/uuid"
@@ -42,32 +44,41 @@ type Task struct {
 
 // FactoryOrchestrator manages the distributed agent factory
 type FactoryOrchestrator struct {
-	workers        map[string]*Worker
-	taskQueue      chan *Task
-	results        map[string]*Task
-	harness        *harness.CompleteHarness
-	contextEngine  *context.ContextEngine
-	specEngine     *spec.SpecEngine
-	verifier       *verify.VerificationEngine
-	mu             sync.RWMutex
-	workerCount    int
-	maxWorkers     int
-	shutdown       chan struct{}
-	wg             sync.WaitGroup
+	workers         map[string]*Worker
+	taskQueue       chan *Task
+	results         map[string]*Task
+	harness         *harness.CompleteHarness
+	contextEngine   *asfContext.ContextEngine
+	specEngine      *spec.SpecEngine
+	verifier        *verify.VerificationEngine
+	persistence     *persistence.PersistenceManager
+	mu              sync.RWMutex
+	workerCount     int
+	maxWorkers      int
+	shutdown        chan struct{}
+	wg              sync.WaitGroup
 }
 
 // NewFactoryOrchestrator creates a new factory orchestrator
-func NewFactoryOrchestrator(workingDir string, maxWorkers int) *FactoryOrchestrator {
+func NewFactoryOrchestrator(workingDir string, maxWorkers int) (*FactoryOrchestrator, error) {
+	// Initialize persistence
+	dataDir := filepath.Join(workingDir, ".asf")
+	persist, err := persistence.NewPersistenceManager(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("initializing persistence: %w", err)
+	}
+
 	fo := &FactoryOrchestrator{
-		workers:       make(map[string]*Worker),
-		taskQueue:     make(chan *Task, 100),
-		results:       make(map[string]*Task),
-		harness:       harness.NewCompleteHarness(workingDir),
-		contextEngine: context.NewContextEngine(workingDir),
-		specEngine:    spec.NewSpecEngine(filepath.Join(workingDir, "specs")),
-		verifier:      verify.NewVerificationEngine(workingDir),
-		maxWorkers:    maxWorkers,
-		shutdown:      make(chan struct{}),
+		workers:         make(map[string]*Worker),
+		taskQueue:       make(chan *Task, 100),
+		results:         make(map[string]*Task),
+		harness:         harness.NewCompleteHarness(workingDir),
+		contextEngine:   asfContext.NewContextEngine(workingDir),
+		specEngine:      spec.NewSpecEngine(filepath.Join(workingDir, "specs")),
+		verifier:        verify.NewVerificationEngine(workingDir),
+		persistence:     persist,
+		maxWorkers:      maxWorkers,
+		shutdown:        make(chan struct{}),
 	}
 
 	// Initialize workers
@@ -75,7 +86,12 @@ func NewFactoryOrchestrator(workingDir string, maxWorkers int) *FactoryOrchestra
 		fo.addWorker(fmt.Sprintf("worker-%d", i), "agent", []string{"generate", "verify"})
 	}
 
-	return fo
+	// Restore persisted tasks
+	if err := fo.restoreTasks(); err != nil {
+		return nil, fmt.Errorf("restoring tasks: %w", err)
+	}
+
+	return fo, nil
 }
 
 // addWorker adds a new worker to the factory
@@ -91,6 +107,17 @@ func (fo *FactoryOrchestrator) addWorker(id, role string, capabilities []string)
 		LastActive:   time.Now(),
 	}
 	fo.workerCount++
+
+	// Persist worker
+	ctx := context.Background()
+	capsJSON, _ := json.Marshal(capabilities)
+	_ = fo.persistence.SaveWorker(ctx, &persistence.WorkerRecord{
+		ID:           id,
+		Role:         role,
+		Capabilities: string(capsJSON),
+		Status:       "idle",
+		LastActive:   time.Now(),
+	})
 }
 
 // Start begins the factory orchestration
@@ -112,6 +139,7 @@ func (fo *FactoryOrchestrator) Start(ctx context.Context) error {
 func (fo *FactoryOrchestrator) Stop() {
 	close(fo.shutdown)
 	fo.wg.Wait()
+	fo.persistence.Close()
 }
 
 // SubmitTask submits a new task to the factory
@@ -124,6 +152,17 @@ func (fo *FactoryOrchestrator) SubmitTask(task *Task) error {
 
 	select {
 	case fo.taskQueue <- task:
+		// Persist the task
+		ctx := context.Background()
+		_ = fo.persistence.SaveTask(ctx, &persistence.TaskRecord{
+			ID:        task.ID,
+			Type:      task.Type,
+			SpecID:    task.SpecID,
+			Priority:  task.Priority,
+			Status:    task.Status,
+			CreatedAt: task.CreatedAt,
+			Retries:   task.Retries,
+		})
 		return nil
 	default:
 		return fmt.Errorf("task queue full")
@@ -137,6 +176,115 @@ func (fo *FactoryOrchestrator) GetTaskResult(taskID string) (*Task, bool) {
 
 	task, ok := fo.results[taskID]
 	return task, ok
+}
+
+// restoreTasks restores persisted tasks from storage
+func (fo *FactoryOrchestrator) restoreTasks() error {
+	ctx := context.Background()
+
+	// Restore pending tasks
+	pendingTasks, err := fo.persistence.GetTasksByStatus(ctx, "pending")
+	if err != nil {
+		return err
+	}
+
+	for _, t := range pendingTasks {
+		task := &Task{
+			ID:          t.ID,
+			Type:        t.Type,
+			SpecID:      t.SpecID,
+			Priority:    t.Priority,
+			Status:      t.Status,
+			AssignedTo:  t.AssignedTo,
+			CreatedAt:   t.CreatedAt,
+			StartedAt:   t.StartedAt,
+			CompletedAt: t.CompletedAt,
+			Error:       t.Error,
+			Retries:     t.Retries,
+		}
+		fo.results[task.ID] = task
+		fo.taskQueue <- task
+	}
+
+	// Restore running tasks (mark as pending for retry)
+	runningTasks, err := fo.persistence.GetTasksByStatus(ctx, "running")
+	if err != nil {
+		return err
+	}
+
+	for _, t := range runningTasks {
+		task := &Task{
+			ID:          t.ID,
+			Type:        t.Type,
+			SpecID:      t.SpecID,
+			Priority:    t.Priority,
+			Status:      "pending", // Re-queue running tasks
+			AssignedTo:  t.AssignedTo,
+			CreatedAt:   t.CreatedAt,
+			Retries:     t.Retries,
+		}
+		fo.results[task.ID] = task
+		fo.taskQueue <- task
+	}
+
+	// Restore completed/failed tasks
+	completedTasks, _ := fo.persistence.GetTasksByStatus(ctx, "completed")
+	failedTasks, _ := fo.persistence.GetTasksByStatus(ctx, "failed")
+
+	for _, t := range completedTasks {
+		task := &Task{
+			ID:          t.ID,
+			Type:        t.Type,
+			SpecID:      t.SpecID,
+			Priority:    t.Priority,
+			Status:      t.Status,
+			AssignedTo:  t.AssignedTo,
+			CreatedAt:   t.CreatedAt,
+			StartedAt:   t.StartedAt,
+			CompletedAt: t.CompletedAt,
+			Error:       t.Error,
+			Retries:     t.Retries,
+		}
+		fo.results[task.ID] = task
+	}
+
+	for _, t := range failedTasks {
+		task := &Task{
+			ID:          t.ID,
+			Type:        t.Type,
+			SpecID:      t.SpecID,
+			Priority:    t.Priority,
+			Status:      t.Status,
+			AssignedTo:  t.AssignedTo,
+			CreatedAt:   t.CreatedAt,
+			StartedAt:   t.StartedAt,
+			CompletedAt: t.CompletedAt,
+			Error:       t.Error,
+			Retries:     t.Retries,
+		}
+		fo.results[task.ID] = task
+	}
+
+	// Restore workers
+	workers, err := fo.persistence.GetAllWorkers(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, w := range workers {
+		var caps []string
+		json.Unmarshal([]byte(w.Capabilities), &caps)
+		fo.workers[w.ID] = &Worker{
+			ID:           w.ID,
+			Role:         w.Role,
+			Capabilities: caps,
+			Status:       w.Status,
+			LastActive:   w.LastActive,
+		}
+		fo.workerCount++
+	}
+
+	return nil
 }
 
 // workerLoop runs the main loop for a worker
@@ -165,6 +313,19 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 	task.Status = "running"
 	task.AssignedTo = worker.ID
 	fo.mu.Unlock()
+
+	// Persist task state
+	_ = fo.persistence.SaveTask(ctx, &persistence.TaskRecord{
+		ID:         task.ID,
+		Type:       task.Type,
+		SpecID:     task.SpecID,
+		Priority:   task.Priority,
+		Status:     task.Status,
+		AssignedTo: task.AssignedTo,
+		CreatedAt:  task.CreatedAt,
+		StartedAt:  task.StartedAt,
+		Retries:    task.Retries,
+	})
 
 	var err error
 	switch task.Type {
@@ -207,6 +368,31 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 
 	fo.results[task.ID] = task
 	fo.mu.Unlock()
+
+	// Persist final state
+	resultJSON, _ := json.Marshal(task.Result)
+	capsJSON, _ := json.Marshal(worker.Capabilities)
+	_ = fo.persistence.SaveTask(ctx, &persistence.TaskRecord{
+		ID:           task.ID,
+		Type:         task.Type,
+		SpecID:       task.SpecID,
+		Priority:     task.Priority,
+		Status:       task.Status,
+		AssignedTo:   task.AssignedTo,
+		CreatedAt:    task.CreatedAt,
+		StartedAt:    task.StartedAt,
+		CompletedAt:  task.CompletedAt,
+		Result:       resultJSON,
+		Error:        task.Error,
+		Retries:      task.Retries,
+	})
+	_ = fo.persistence.SaveWorker(ctx, &persistence.WorkerRecord{
+		ID:           worker.ID,
+		Role:         worker.Role,
+		Capabilities: string(capsJSON),
+		Status:       worker.Status,
+		LastActive:   worker.LastActive,
+	})
 }
 
 // executeGenerate executes a code generation task
@@ -230,14 +416,14 @@ func (fo *FactoryOrchestrator) executeGenerate(ctx context.Context, task *Task) 
 
 	// Generate prompt
 	prompt := fo.specEngine.GeneratePrompt(s)
-	contextStr := context.FormatForAgent(contextItems)
+	contextStr := asfContext.FormatForAgent(contextItems)
 	fullPrompt := fmt.Sprintf("%s\n\n## Project Context\n%s", prompt, contextStr)
 
 	// In real implementation, call agent here
 	// For now, store the prompt as result
 	task.Result = map[string]interface{}{
-		"prompt":      fullPrompt,
-		"spec_id":     task.SpecID,
+		"prompt":        fullPrompt,
+		"spec_id":       task.SpecID,
 		"context_items": len(contextItems),
 	}
 
@@ -357,12 +543,12 @@ func (fo *FactoryOrchestrator) GetFactoryStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"workers_total":  fo.workerCount,
-		"workers_busy":   busy,
-		"workers_idle":   idle,
-		"tasks_pending":  pending,
+		"workers_total":   fo.workerCount,
+		"workers_busy":    busy,
+		"workers_idle":    idle,
+		"tasks_pending":   pending,
 		"tasks_completed": completed,
-		"tasks_failed":   failed,
-		"max_workers":    fo.maxWorkers,
+		"tasks_failed":    failed,
+		"max_workers":     fo.maxWorkers,
 	}
 }

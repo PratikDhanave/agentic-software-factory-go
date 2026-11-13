@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
+	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
 )
 
 func main() {
@@ -20,7 +19,7 @@ func main() {
 	fmt.Println()
 
 	ctx := context.Background()
-	engine := context.NewContextEngine(workingDir)
+	engine := asfContext.NewContextEngine(workingDir)
 
 	// Load context
 	items, err := engine.LoadContext(ctx)
@@ -32,7 +31,7 @@ func main() {
 	fmt.Printf("Loaded %d context items\n\n", len(items))
 
 	// Show context by category
-	categories := map[string][]context.ContextItem{}
+	categories := map[string][]asfContext.ContextItem{}
 	for _, item := range items {
 		categories[item.Category] = append(categories[item.Category], item)
 	}
@@ -96,6 +95,6 @@ func main() {
 
 	// Show formatted context for agent
 	fmt.Println("=== FORMATTED CONTEXT FOR AGENT INJECTION ===")
-	formatted := context.FormatForAgent(items)
+	formatted := asfContext.FormatForAgent(items)
 	fmt.Println(formatted)
 }

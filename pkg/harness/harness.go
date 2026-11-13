@@ -3,17 +3,18 @@ package harness
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
+	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
 )
 
 // CompleteHarness integrates context, specs, and verification
 type CompleteHarness struct {
-	contextEngine *context.ContextEngine
+	contextEngine *asfContext.ContextEngine
 	specEngine    *spec.SpecEngine
 	verifier      *verify.VerificationEngine
 	workingDir    string
@@ -24,7 +25,7 @@ type CompleteHarness struct {
 type HarnessResult struct {
 	SpecID          string
 	Success         bool
-	ContextItems    []context.ContextItem
+	ContextItems    []asfContext.ContextItem
 	SpecPrompt      string
 	Verification    *verify.VerificationResult
 	TotalDuration   time.Duration
@@ -36,7 +37,7 @@ type HarnessResult struct {
 // NewCompleteHarness creates a new complete harness
 func NewCompleteHarness(workingDir string) *CompleteHarness {
 	return &CompleteHarness{
-		contextEngine: context.NewContextEngine(workingDir),
+		contextEngine: asfContext.NewContextEngine(workingDir),
 		specEngine:    spec.NewSpecEngine(filepath.Join(workingDir, "specs")),
 		verifier:      verify.NewVerificationEngine(workingDir),
 		workingDir:    workingDir,
@@ -80,7 +81,7 @@ func (h *CompleteHarness) Execute(ctx context.Context, specID string) (*HarnessR
 
 	// Generate prompt from spec + context
 	specPrompt := h.specEngine.GeneratePrompt(s)
-	contextStr := context.FormatForAgent(contextItems)
+	contextStr := asfContext.FormatForAgent(contextItems)
 	fullPrompt := fmt.Sprintf("%s\n\n## Project Context\n%s", specPrompt, contextStr)
 	result.SpecPrompt = fullPrompt
 
@@ -128,7 +129,7 @@ func (h *CompleteHarness) ExecuteWithAgent(ctx context.Context, specID string, a
 
 	// Generate initial prompt
 	specPrompt := h.specEngine.GeneratePrompt(s)
-	contextStr := context.FormatForAgent(contextItems)
+	contextStr := asfContext.FormatForAgent(contextItems)
 	prompt := fmt.Sprintf("%s\n\n## Project Context\n%s", specPrompt, contextStr)
 
 	// Retry loop with agent
@@ -195,6 +196,6 @@ func DefaultHarnessConfig() HarnessConfig {
 func NewHarnessFromConfig(config HarnessConfig) *CompleteHarness {
 	h := NewCompleteHarness(config.WorkingDir)
 	h.maxRetries = config.MaxRetries
-	h.verifier.timeout = config.VerificationTimeout
+	h.verifier.Timeout = config.VerificationTimeout
 	return h
 }

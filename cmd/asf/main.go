@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factorydef"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/mcp"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
 )
@@ -30,7 +33,7 @@ func main() {
 		runContextEngine(workingDir)
 	case "spec":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: asf spec <load|validate|generate|template> [spec-id]")
+			fmt.Println("Usage: asf spec <load|validate|generate|template|list> [spec-id]")
 			os.Exit(1)
 		}
 		runSpecEngine(workingDir, os.Args[2:])
@@ -48,6 +51,8 @@ func main() {
 			os.Exit(1)
 		}
 		runFactory(workingDir, os.Args[2:])
+	case "mcp":
+		runMCPServer(workingDir, os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -58,7 +63,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println(`ASF - Agentic Software Factory CLI
+	fmt.Print(`ASF - Agentic Software Factory CLI
 
 Usage: asf <command> [args...]
 
@@ -70,6 +75,7 @@ Commands:
     validate <spec-id> Validate a specification
     generate <spec-id> Generate agent prompt from specification
     template [path]   Write specification template
+    list              List all specifications
   verify            Run verification (build, test, lint)
   harness           Complete harness operations
     run <spec-id>     Run complete harness for specification
@@ -79,6 +85,8 @@ Commands:
     stop              Stop the factory
     status            Show factory status
     submit <type> <spec-id> Submit a task to the factory
+  mcp               Start MCP server for headless API access
+    start [addr]      Start MCP server (default: localhost:8080)
   help              Show this help
 
 Examples:
@@ -89,6 +97,7 @@ Examples:
   asf harness run spec-001
   asf factory start
   asf factory submit generate spec-001
+  asf mcp start
 `)
 }
 
@@ -152,7 +161,7 @@ All dependencies MUST be vendored or in go.mod.
 
 func runContextEngine(workingDir string) {
 	ctx := context.Background()
-	engine := context.NewContextEngine(workingDir)
+	engine := asfContext.NewContextEngine(workingDir)
 
 	items, err := engine.LoadContext(ctx)
 	if err != nil {
@@ -174,7 +183,7 @@ func runContextEngine(workingDir string) {
 	}
 
 	// Show formatted for agent
-	formatted := context.FormatForAgent(items)
+	formatted := asfContext.FormatForAgent(items)
 	fmt.Println("--- Formatted for Agent ---")
 	fmt.Println(formatted)
 }
@@ -362,7 +371,11 @@ func runFactory(workingDir string, args []string) {
 
 	switch subcommand {
 	case "start":
-		fo := factory.NewFactoryOrchestrator(workingDir, 4)
+		fo, err := factory.NewFactoryOrchestrator(workingDir, 4)
+		if err != nil {
+			fmt.Printf("Factory start error: %v\n", err)
+			os.Exit(1)
+		}
 		if err := fo.Start(ctx); err != nil {
 			fmt.Printf("Factory start error: %v\n", err)
 			os.Exit(1)
@@ -372,7 +385,11 @@ func runFactory(workingDir string, args []string) {
 		select {} // Wait forever
 
 	case "status":
-		fo := factory.NewFactoryOrchestrator(workingDir, 4)
+		fo, err := factory.NewFactoryOrchestrator(workingDir, 4)
+		if err != nil {
+			fmt.Printf("Factory status error: %v\n", err)
+			os.Exit(1)
+		}
 		status := fo.GetFactoryStatus()
 		fmt.Println("Factory Status:")
 		for k, v := range status {
@@ -387,7 +404,11 @@ func runFactory(workingDir string, args []string) {
 		taskType := args[1]
 		specID := args[2]
 
-		fo := factory.NewFactoryOrchestrator(workingDir, 4)
+		fo, err := factory.NewFactoryOrchestrator(workingDir, 4)
+		if err != nil {
+			fmt.Printf("Factory error: %v\n", err)
+			os.Exit(1)
+		}
 		task := &factory.Task{
 			Type:     taskType,
 			SpecID:   specID,
@@ -404,4 +425,49 @@ func runFactory(workingDir string, args []string) {
 		fmt.Printf("Unknown factory subcommand: %s\n", subcommand)
 		os.Exit(1)
 	}
+}
+
+func runMCPServer(workingDir string, args []string) {
+	addr := "localhost:8080"
+	if len(args) > 0 && args[0] != "" {
+		addr = args[0]
+	}
+
+	// Load factory definition
+	factoryDefPath, err := factorydef.FindFactoryDefinition(workingDir)
+	if err != nil {
+		fmt.Printf("Warning: no factory definition found: %v\n", err)
+	}
+
+	var factoryDef *factorydef.FactoryDefinition
+	if factoryDefPath != "" {
+		factoryDef, err = factorydef.LoadFactoryDefinition(factoryDefPath)
+		if err != nil {
+			fmt.Printf("Warning: failed to load factory definition: %v\n", err)
+		}
+	}
+
+	// Create factory
+	fo, err := factory.NewFactoryOrchestrator(workingDir, 4)
+	if err != nil {
+		fmt.Printf("Factory error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create MCP server
+	mcpServer := mcp.NewMCPServer(fo, factoryDef)
+
+	fmt.Printf("Starting MCP server on %s...\n", addr)
+	fmt.Println("Available tools: submit_task, get_task_result, get_factory_status, list_specs, get_spec, list_agents, run_verification")
+	fmt.Println("Press Ctrl+C to stop")
+
+	// Start server in background
+	go func() {
+		if err := mcpServer.Start(addr); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("MCP server error: %v\n", err)
+		}
+	}()
+
+	// Wait for interrupt
+	select {}
 }
