@@ -1,0 +1,105 @@
+{
+  "type": "architecture",
+  "meta": {
+    "title": "Complete Harness Architecture",
+    "quality_profile": "showcase",
+    "theme": "light"
+  },
+  "components": [
+    {
+      "id": "spec",
+      "name": "Specification",
+      "type": "database",
+      "description": "Machine-readable intent definition"
+    },
+    {
+      "id": "context_engine",
+      "name": "Context Engine",
+      "type": "backend",
+      "description": "Loads ADRs, specs, code patterns"
+    },
+    {
+      "id": "harness",
+      "name": "Complete Harness",
+      "type": "backend",
+      "description": "Orchestrates full verification pipeline"
+    },
+    {
+      "id": "build_phase",
+      "name": "Build Phase",
+      "type": "backend",
+      "description": "go build ./..."
+    },
+    {
+      "id": "test_phase",
+      "name": "Test Phase",
+      "type": "backend",
+      "description": "go test -v ./..."
+    },
+    {
+      "id": "lint_phase",
+      "name": "Lint Phase",
+      "type": "backend",
+      "description": "golangci-lint run"
+    },
+    {
+      "id": "constraint_phase",
+      "name": "Constraint Phase",
+      "type": "security",
+      "description": "Spec constraint validation"
+    },
+    {
+      "id": "agent",
+      "name": "Agent",
+      "type": "external",
+      "description": "Receives feedback, regenerates code"
+    }
+  ],
+  "connections": [
+    {
+      "from": "spec",
+      "to": "harness",
+      "label": "Load"
+    },
+    {
+      "from": "context_engine",
+      "to": "harness",
+      "label": "Inject Context"
+    },
+    {
+      "from": "harness",
+      "to": "build_phase",
+      "label": "Execute"
+    },
+    {
+      "from": "build_phase",
+      "to": "test_phase",
+      "label": "Build OK"
+    },
+    {
+      "from": "test_phase",
+      "to": "lint_phase",
+      "label": "Tests Pass"
+    },
+    {
+      "from": "lint_phase",
+      "to": "constraint_phase",
+      "label": "Lint Clean"
+    },
+    {
+      "from": "constraint_phase",
+      "to": "harness",
+      "label": "All Pass"
+    },
+    {
+      "from": "harness",
+      "to": "agent",
+      "label": "Feedback (on fail)"
+    },
+    {
+      "from": "agent",
+      "to": "harness",
+      "label": "Retry (max 3)"
+    }
+  ]
+}

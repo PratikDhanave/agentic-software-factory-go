@@ -1,0 +1,99 @@
+{
+  "type": "architecture",
+  "meta": {
+    "title": "Agentic Software Factory Architecture",
+    "quality_profile": "showcase",
+    "theme": "light"
+  },
+  "components": [
+    {
+      "id": "orchestrator",
+      "name": "Factory Orchestrator",
+      "type": "backend",
+      "description": "Coordinates workers, manages task queue, handles scaling"
+    },
+    {
+      "id": "context_engine",
+      "name": "Context Curation Engine",
+      "type": "backend",
+      "description": "Loads ADRs, specs, and code into agent context"
+    },
+    {
+      "id": "spec_engine",
+      "name": "Specification Engine",
+      "type": "backend",
+      "description": "Parses, validates, and generates prompts from specs"
+    },
+    {
+      "id": "worker_pool",
+      "name": "Agent Worker Pool",
+      "type": "backend",
+      "description": "Scalable pool of generation/verification workers"
+    },
+    {
+      "id": "verifier",
+      "name": "AI-TDD Verification Engine",
+      "type": "security",
+      "description": "Runs build, test, lint verification loops"
+    },
+    {
+      "id": "sandbox",
+      "name": "Isolated Execution Sandbox",
+      "type": "cloud",
+      "description": "Docker-based secure code execution environment"
+    },
+    {
+      "id": "security",
+      "name": "Security & RBAC Layer",
+      "type": "security",
+      "description": "Input sanitization, command validation, role-based access"
+    }
+  ],
+  "connections": [
+    {
+      "from": "orchestrator",
+      "to": "context_engine",
+      "label": "Fetch Context"
+    },
+    {
+      "from": "orchestrator",
+      "to": "spec_engine",
+      "label": "Load Spec"
+    },
+    {
+      "from": "orchestrator",
+      "to": "worker_pool",
+      "label": "Dispatch Tasks"
+    },
+    {
+      "from": "worker_pool",
+      "to": "verifier",
+      "label": "Submit for Verification"
+    },
+    {
+      "from": "verifier",
+      "to": "sandbox",
+      "label": "Execute Tests"
+    },
+    {
+      "from": "sandbox",
+      "to": "verifier",
+      "label": "Return Results"
+    },
+    {
+      "from": "verifier",
+      "to": "worker_pool",
+      "label": "Feedback Loop"
+    },
+    {
+      "from": "worker_pool",
+      "to": "security",
+      "label": "Validate Commands"
+    },
+    {
+      "from": "security",
+      "to": "sandbox",
+      "label": "Execute if Allowed"
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "type": "lifecycle",
+  "meta": {
+    "title": "AI-TDD Verification Loop",
+    "quality_profile": "showcase",
+    "theme": "light"
+  },
+  "states": [
+    {
+      "id": "code_generated",
+      "name": "Code Generated",
+      "type": "start",
+      "description": "Agent produces code from specification"
+    },
+    {
+      "id": "build_verify",
+      "name": "Build Verification",
+      "type": "active",
+      "description": "go build ./... compiles successfully"
+    },
+    {
+      "id": "test_verify",
+      "name": "Test Verification",
+      "type": "active",
+      "description": "go test -v ./... all tests pass"
+    },
+    {
+      "id": "lint_verify",
+      "name": "Lint Verification",
+      "type": "active",
+      "description": "golangci-lint run ./... no issues"
+    },
+    {
+      "id": "constraint_verify",
+      "name": "Constraint Verification",
+      "type": "active",
+      "description": "Spec constraints validated"
+    },
+    {
+      "id": "success",
+      "name": "Verification Passed",
+      "type": "success",
+      "description": "All phases passed, ready for merge"
+    },
+    {
+      "id": "failure",
+      "name": "Verification Failed",
+      "type": "failure",
+      "description": "Errors found, feedback to agent"
+    },
+    {
+      "id": "agent_fix",
+      "name": "Agent Fixes Code",
+      "type": "active",
+      "description": "Agent incorporates feedback, regenerates"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "code_generated",
+      "to": "build_verify",
+      "label": "Start Verification"
+    },
+    {
+      "from": "build_verify",
+      "to": "test_verify",
+      "label": "Build OK"
+    },
+    {
+      "from": "build_verify",
+      "to": "failure",
+      "label": "Build Error"
+    },
+    {
+      "from": "test_verify",
+      "to": "lint_verify",
+      "label": "Tests Pass"
+    },
+    {
+      "from": "test_verify",
+      "to": "failure",
+      "label": "Test Failure"
+    },
+    {
+      "from": "lint_verify",
+      "to": "constraint_verify",
+      "label": "Lint Clean"
+    },
+    {
+      "from": "lint_verify",
+      "to": "failure",
+      "label": "Lint Issues"
+    },
+    {
+      "from": "constraint_verify",
+      "to": "success",
+      "label": "Constraints Met"
+    },
+    {
+      "from": "constraint_verify",
+      "to": "failure",
+      "label": "Constraint Violation"
+    },
+    {
+      "from": "failure",
+      "to": "agent_fix",
+      "label": "Generate Feedback"
+    },
+    {
+      "from": "agent_fix",
+      "to": "code_generated",
+      "label": "Retry (max 3)"
+    }
+  ]
+}

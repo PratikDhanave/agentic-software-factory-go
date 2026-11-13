@@ -1,0 +1,78 @@
+{
+  "type": "workflow",
+  "meta": {
+    "title": "Intent Shaping Workflow",
+    "quality_profile": "showcase",
+    "theme": "light"
+  },
+  "components": [
+    {
+      "id": "vague_prompt",
+      "name": "Vague English Prompt",
+      "type": "external",
+      "description": "Ambiguous natural language request"
+    },
+    {
+      "id": "spec_engine",
+      "name": "Specification Engine",
+      "type": "backend",
+      "description": "Parses and validates machine-readable specs"
+    },
+    {
+      "id": "plan_builder",
+      "name": "Plan Builder",
+      "type": "backend",
+      "description": "Decomposes spec into executable steps"
+    },
+    {
+      "id": "validator",
+      "name": "Spec Validator",
+      "type": "security",
+      "description": "Validates constraints and dependencies"
+    },
+    {
+      "id": "bound_prompt",
+      "name": "Bound Agent Prompt",
+      "type": "external",
+      "description": "Structured prompt with constraints and plan"
+    },
+    {
+      "id": "agent",
+      "name": "Agent Executor",
+      "type": "backend",
+      "description": "Executes plan step by step"
+    }
+  ],
+  "connections": [
+    {
+      "from": "vague_prompt",
+      "to": "spec_engine",
+      "label": "Capture as Spec"
+    },
+    {
+      "from": "spec_engine",
+      "to": "validator",
+      "label": "Validate"
+    },
+    {
+      "from": "validator",
+      "to": "plan_builder",
+      "label": "Build Plan"
+    },
+    {
+      "from": "plan_builder",
+      "to": "bound_prompt",
+      "label": "Generate Prompt"
+    },
+    {
+      "from": "bound_prompt",
+      "to": "agent",
+      "label": "Execute"
+    },
+    {
+      "from": "agent",
+      "to": "validator",
+      "label": "Verify Output"
+    }
+  ]
+}

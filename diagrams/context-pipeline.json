@@ -1,0 +1,83 @@
+{
+  "type": "dataflow",
+  "meta": {
+    "title": "Context Engineering Pipeline",
+    "quality_profile": "showcase",
+    "theme": "light"
+  },
+  "components": [
+    {
+      "id": "repo",
+      "name": "Repository",
+      "type": "database",
+      "description": "Source code, docs, ADRs, specs"
+    },
+    {
+      "id": "context_engine",
+      "name": "Context Engine",
+      "type": "backend",
+      "description": "Loads and prioritizes context items"
+    },
+    {
+      "id": "adr_loader",
+      "name": "ADR Loader",
+      "type": "backend",
+      "description": "Loads Architectural Decision Records (priority: 100)"
+    },
+    {
+      "id": "spec_loader",
+      "name": "Spec Loader",
+      "type": "backend",
+      "description": "Loads machine-readable specifications (priority: 90)"
+    },
+    {
+      "id": "code_loader",
+      "name": "Code Loader",
+      "type": "backend",
+      "description": "Loads source code files (priority: 50)"
+    },
+    {
+      "id": "agent_context",
+      "name": "Agent Context Window",
+      "type": "external",
+      "description": "Formatted context injected into agent"
+    }
+  ],
+  "connections": [
+    {
+      "from": "repo",
+      "to": "context_engine",
+      "label": "Read Files"
+    },
+    {
+      "from": "context_engine",
+      "to": "adr_loader",
+      "label": "Load ADRs"
+    },
+    {
+      "from": "context_engine",
+      "to": "spec_loader",
+      "label": "Load Specs"
+    },
+    {
+      "from": "context_engine",
+      "to": "code_loader",
+      "label": "Load Code"
+    },
+    {
+      "from": "adr_loader",
+      "to": "agent_context",
+      "label": "Inject Constraints"
+    },
+    {
+      "from": "spec_loader",
+      "to": "agent_context",
+      "label": "Inject Intent"
+    },
+    {
+      "from": "code_loader",
+      "to": "agent_context",
+      "label": "Inject Patterns"
+    }
+  ]
+}
