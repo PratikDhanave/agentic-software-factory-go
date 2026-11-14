@@ -1,5 +1,8 @@
 /manuscript/*.pdf
 
+# Compiled Go binary
+/asf
+
 # Node / Next.js
 node_modules/
 .next/
