@@ -1,7 +1,14 @@
 /manuscript/*.pdf
 
-# Compiled Go binary
+# Compiled Go binaries
 /asf
+/asf-web-bin
+
+# Factory runtime state (SQLite)
+/.asf/
+
+# Playwright MCP artifacts
+/.playwright-mcp/
 
 # Node / Next.js
 node_modules/

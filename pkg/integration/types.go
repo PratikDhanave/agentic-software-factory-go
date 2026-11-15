@@ -1,10 +1,28 @@
 package integration
 
 import (
-	"encoding/json"
-	"fmt"
 	"time"
+
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
 )
+
+// Integration connection states. An integration's lifecycle was previously
+// encoded implicitly across the Enabled/Connected/Error fields; ConnectionState
+// makes it a single explicit value.
+const (
+	ConnDisabled  state.State = "disabled"
+	ConnConnected state.State = "connected"
+	ConnDegraded  state.State = "degraded" // enabled but last contact failed
+	ConnOffline   state.State = "offline"  // enabled but never/no longer connected
+)
+
+// ConnectionMachine is the explicit integration connection lifecycle.
+var ConnectionMachine = state.NewMachine("integration-connection", ConnDisabled, map[state.State][]state.State{
+	ConnDisabled:  {ConnOffline},
+	ConnOffline:   {ConnConnected, ConnDisabled},
+	ConnConnected: {ConnDegraded, ConnOffline, ConnDisabled},
+	ConnDegraded:  {ConnConnected, ConnOffline, ConnDisabled},
+})
 
 // Platform represents a constrained string type for known platforms.
 type Platform string
@@ -102,13 +120,71 @@ type IntegrationConfig struct {
 }
 
 // IntegrationStatus represents the status of an integration.
+// Enabled/Connected/Error are retained for JSON compatibility; State is
+// the explicit lifecycle value derived from them (see ConnectionMachine).
 type IntegrationStatus struct {
-	ID        string    `json:"id"`
-	Platform  Platform  `json:"platform"`
-	Enabled   bool      `json:"enabled"`
-	Connected bool      `json:"connected"`
-	LastSeen  time.Time `json:"last_seen"`
-	Error     string    `json:"error,omitempty"`
+	ID        string      `json:"id"`
+	Platform  Platform    `json:"platform"`
+	Enabled   bool        `json:"enabled"`
+	Connected bool        `json:"connected"`
+	State     state.State `json:"state"`
+	LastSeen  time.Time   `json:"last_seen"`
+	Error     string      `json:"error,omitempty"`
+}
+
+// ConnectionState derives the explicit state from the legacy boolean fields.
+func (s *IntegrationStatus) ConnectionState() state.State {
+	switch {
+	case !s.Enabled:
+		return ConnDisabled
+	case s.Connected && s.Error != "":
+		return ConnDegraded
+	case s.Connected:
+		return ConnConnected
+	default:
+		return ConnOffline
+	}
+}
+
+// PlatformConfig holds the runtime configuration registered for a platform.
+type PlatformConfig struct {
+	Config IntegrationConfig `json:"config"`
+	Status IntegrationStatus `json:"status"`
+}
+
+// WebhookRegistration describes a registered webhook endpoint.
+type WebhookRegistration struct {
+	ID       string   `json:"id"`
+	Platform Platform `json:"platform"`
+	URL      string   `json:"url"`
+	Events   []string `json:"events"`
+}
+
+// IntegrationEvent is an inbound event from a platform.
+type IntegrationEvent struct {
+	ID        string                 `json:"id"`
+	Platform  Platform               `json:"platform"`
+	Type      string                 `json:"type"`
+	Payload   map[string]interface{} `json:"payload"`
+	CreatedAt time.Time              `json:"created_at"`
+}
+
+// WebhookEvent is a normalized inbound webhook event from any platform.
+type WebhookEvent struct {
+	ID        string                 `json:"id"`
+	Platform  Platform               `json:"platform"`
+	Type      string                 `json:"type"`
+	Timestamp time.Time              `json:"timestamp"`
+	Payload   map[string]interface{} `json:"payload"`
+}
+
+// Channel is a messaging channel on a platform.
+type Channel struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	Platform   Platform `json:"platform"`
+	PlatformID string   `json:"platform_id"`
 }
 
 // IntegrationManager manages platform integrations.
@@ -125,6 +201,7 @@ func NewIntegrationManager() *IntegrationManager {
 		webhooks:  make(map[string]*WebhookRegistration),
 		events:    make(chan IntegrationEvent, 100),
 	}
+}
 
 // RegisterPlatform registers a platform configuration.
 func (m *IntegrationManager) RegisterPlatform(platform Platform, config PlatformConfig) {

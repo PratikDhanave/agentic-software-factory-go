@@ -392,7 +392,7 @@ func (a *linearAdapter) ListChannels() ([]string, error) {
 }
 
 // RegisterRoutes registers the Linear webhook endpoint on an http.ServeMux
-func RegisterLinearRoutes(mux *http.ServeMux, adapter *linearAdapter) {
+func RegisterLinearRoutes(mux *http.ServeMux, a *linearAdapter) {
 	mux.HandleFunc("/linear/webhook", func(w http.ResponseWriter, r *http.Request) {
 		// Only accept POST requests
 		if r.Method != http.MethodPost {

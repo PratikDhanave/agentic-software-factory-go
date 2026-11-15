@@ -1,6 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { launchMachine, useMachine } from '@/lib/stateMachine';
+
+const buttonStyles: Record<string, string> = {
+  idle: 'bg-indigo-600 text-white hover:bg-indigo-700 focus:ring-indigo-500',
+  loading: 'bg-indigo-400 text-white cursor-wait',
+  success: 'bg-green-600 text-white cursor-default',
+  error: 'bg-red-600 text-white hover:bg-red-700 focus:ring-red-500',
+};
 
 const colors = {
   indigo: { bg: 'bg-indigo-100 dark:bg-indigo-900/20', text: 'text-indigo-600 dark:text-indigo-400' },
@@ -14,31 +21,29 @@ const colors = {
 export function FeatureCard({
   icon, title, description, actionLabel, endpoint, color, specRequired = true
 }: FeatureCardProps) {
-  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const { current: status, send } = useMachine(launchMachine);
 
   const handleLaunch = async () => {
-    if (!localStorage.getItem('activeSpec')) {
-      alert('Please select a spec first');
-      return;
-    }
-    setStatus('loading');
+    const spec = localStorage.getItem('activeSpec') || 'spec-001';
+    if (!send('loading')) return;
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spec_id: localStorage.getItem('activeSpec') || 'spec-001', priority: 1 }),
+        body: JSON.stringify({ spec_id: spec, priority: 1 }),
       });
       const data = await res.json();
-      if (data.task_id) {
-        setStatus('success');
+      if (res.ok && data.task_id) {
+        send('success');
         localStorage.setItem('activeTaskId', data.task_id);
         window.dispatchEvent(new CustomEvent('taskLaunched', { detail: { taskId: data.task_id } }));
       } else {
-        setStatus('error');
+        console.error('Launch rejected:', data.error ?? res.status);
+        send('error');
       }
     } catch (e) {
       console.error('Launch error:', e);
-      setStatus('error');
+      send('error');
     }
   };
 
@@ -57,12 +62,12 @@ export function FeatureCard({
       </div>
       <button
         onClick={handleLaunch}
-        disabled={status === 'loading'}
-        className="w-full px-4 py-2 rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800"
+        disabled={status === 'loading' || status === 'success'}
+        className={`w-full px-4 py-2 rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${buttonStyles[status]}`}
       >
-        {status === 'loading' && <span className="animate-spin mr-2">•</span>}
-        {status === 'success' && <span className="text-green-600">Launched!</span>}
-        {status === 'error' && <span className="text-red-600">Failed - Try Again</span>}
+        {status === 'loading' && <span><span className="inline-block animate-spin mr-2">◌</span>Launching…</span>}
+        {status === 'success' && <span>✓ Launched</span>}
+        {status === 'error' && <span>Failed — Try Again</span>}
         {status === 'idle' && <span>{actionLabel}</span>}
       </button>
     </div>

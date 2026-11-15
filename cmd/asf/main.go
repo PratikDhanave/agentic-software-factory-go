@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,8 +13,10 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factorydef"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/integration"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/mcp"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
 )
 
@@ -157,6 +160,7 @@ Commands:
     stop              Stop the factory
     status            Show factory status
     submit <type> <spec-id> Submit a task to the factory
+    states [--json|--markdown] Print the declared state machines
   mcp               Start MCP server for headless API access
     start [addr]      Start MCP server (default: localhost:8080)
   web               Web UI and asset generation
@@ -447,11 +451,72 @@ func runHarness(workingDir string, args []string) {
 	}
 }
 
+// stateMachines lists every explicit state machine in the system.
+func stateMachines() []*state.Machine {
+	return append(factory.Machines(), verify.PhaseMachine, integration.ConnectionMachine)
+}
+
+// runFactoryStates prints the declared state machines. Formats:
+//
+//	asf factory states            human-readable Mermaid diagrams
+//	asf factory states --json     machine-readable JSON (for agents/tools)
+//	asf factory states --markdown full Markdown document
+func runFactoryStates(args []string) {
+	format := "mermaid"
+	if len(args) > 0 {
+		switch args[0] {
+		case "--json":
+			format = "json"
+		case "--markdown":
+			format = "markdown"
+		}
+	}
+
+	machines := stateMachines()
+
+	switch format {
+	case "json":
+		exports := make([]state.Export, 0, len(machines))
+		for _, m := range machines {
+			exports = append(exports, m.Export())
+		}
+		data, _ := json.MarshalIndent(map[string]interface{}{"machines": exports}, "", "  ")
+		fmt.Println(string(data))
+
+	case "markdown":
+		fmt.Println("# State Machines")
+		fmt.Println()
+		fmt.Println("Every lifecycle in the Agentic Software Factory is an explicit, declared")
+		fmt.Println("state machine (see `pkg/state`). This document is generated — regenerate")
+		fmt.Println("with `asf factory states --markdown > docs/STATE_MACHINES.md`.")
+		fmt.Println()
+		fmt.Println("The same declarations are served at runtime from `GET /api/state-machines`")
+		fmt.Println("(asf-web) and are mirrored for the dashboard in `web-ui/src/lib/stateMachine.ts`.")
+		for _, m := range machines {
+			fmt.Printf("\n## %s\n\n", m.Name())
+			fmt.Printf("Initial state: `%s`\n\n", m.Initial())
+			fmt.Println("```mermaid")
+			fmt.Print(m.Mermaid())
+			fmt.Println("```")
+		}
+
+	default:
+		for _, m := range machines {
+			fmt.Printf("=== %s (initial: %s) ===\n", m.Name(), m.Initial())
+			fmt.Print(m.Mermaid())
+			fmt.Println()
+		}
+	}
+}
+
 func runFactory(workingDir string, args []string) {
 	subcommand := args[0]
 	ctx := context.Background()
 
 	switch subcommand {
+	case "states":
+		runFactoryStates(args[1:])
+		return
 	case "start":
 		fo, err := factory.NewFactoryOrchestrator(workingDir, 4)
 		if err != nil {

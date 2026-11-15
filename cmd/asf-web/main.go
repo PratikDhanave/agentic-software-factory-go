@@ -1,215 +1,262 @@
+// Command asf-web serves the factory HTTP API consumed by the Next.js
+// dashboard (web-ui/). Task lifecycle semantics come from factory.TaskMachine;
+// this server never hardcodes state names or terminality.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"path/filepath"
+	"os"
 	"strings"
 	"time"
 
-	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factorydef"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
 )
 
-// webServer represents the ASF web server
-type webServer struct {
-	factory   *factory.FactoryOrchestrator
-	factoryDef *factorydef.FactoryDefinition
-	harness   *harness.CompleteHarness
+// launchTaskTypes maps a dashboard launch action to the factory task type
+// that implements it today.
+var launchTaskTypes = map[string]string{
+	"review":   "review",
+	"bugfix":   "generate",
+	"feature":  "generate",
+	"eval":     "verify",
+	"refactor": "refactor",
+	"migrate":  "refactor",
 }
 
-// newWebServer creates a new web server instance
+type webServer struct {
+	factory    *factory.FactoryOrchestrator
+	factoryDef *factorydef.FactoryDefinition
+	harness    *harness.CompleteHarness
+}
+
 func newWebServer(workingDir string) (*webServer, error) {
-	// Initialize factory
 	fo, err := factory.NewFactoryOrchestrator(workingDir, 4)
 	if err != nil {
 		return nil, fmt.Errorf("creating factory: %w", err)
 	}
+	if err := fo.Start(context.Background()); err != nil {
+		return nil, fmt.Errorf("starting factory: %w", err)
+	}
 
-	// Load factory definition
-	factoryDefPath, err := factorydef.FindFactoryDefinition(workingDir)
 	var factoryDef *factorydef.FactoryDefinition
-	if err == nil {
-		factoryDef, err = factorydef.LoadFactoryDefinition(factoryDefPath)
+	if path, err := factorydef.FindFactoryDefinition(workingDir); err == nil {
+		factoryDef, err = factorydef.LoadFactoryDefinition(path)
 		if err != nil {
 			log.Printf("Warning: failed to load factory definition: %v", err)
 		}
 	}
 
-	// Initialize harness
-	h := harness.NewCompleteHarness(workingDir)
-
 	return &webServer{
 		factory:    fo,
 		factoryDef: factoryDef,
-		harness:    h,
+		harness:    harness.NewCompleteHarness(workingDir),
 	}, nil
 }
 
-// startHTTPServer starts the HTTP server with routes
-func startHTTPServer(w *webServer, addr string) *http.Server {
+func (s *webServer) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 
-	// Static file serving
-	mux.HandleFunc("/static/", func(w http.ResponseWriter, r *http.Request) {
-		http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static"))).ServeHTTP(w, r)
-	})
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static"))))
+	mux.Handle("/templates/", http.StripPrefix("/templates/", http.FileServer(http.Dir("./web/templates"))))
 
-	mux.HandleFunc("/templates/", func(w http.ResponseWriter, r *http.Request) {
-		http.StripPrefix("/templates/", http.FileServer(http.Dir("./web/templates"))).ServeHTTP(w, r)
-	})
+	mux.HandleFunc("/api/factory/status", s.handleFactoryStatus)
+	mux.HandleFunc("/api/factory/launch/", s.handleFactoryLaunch)
+	mux.HandleFunc("/api/harness/status", s.handleHarnessStatus)
+	mux.HandleFunc("/api/specs", s.handleListSpecs)
+	mux.HandleFunc("/api/agents", s.handleListAgents)
+	mux.HandleFunc("/api/state-machines", s.handleStateMachines)
+	mux.HandleFunc("/api/tasks/", s.handleTask)
+	mux.HandleFunc("/", s.handleRoot)
 
-	// API routes
-	mux.HandleFunc("/api/factory/status", w.handleFactoryStatus)
-	mux.HandleFunc("/api/harness/status", w.handleHarnessStatus)
-	mux.HandleFunc("/api/specs", w.handleListSpecs)
-	mux.HandleFunc("/api/agents", w.handleListAgents)
-	// WebSocket handler for task status streaming
-func (w *webServer) handleTaskStream(w http.ResponseWriter, r *http.Request) {
-	taskID := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
-	taskID = strings.TrimSuffix(taskID, "/stream")
+	return mux
+}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+func (s *webServer) handleFactoryStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.factory.GetFactoryStatus())
+}
+
+// handleFactoryLaunch handles POST /api/factory/launch/{action}: it submits
+// a task of the mapped type and returns its ID so the client can follow the
+// task's state machine via /api/tasks/{id}.
+func (s *webServer) handleFactoryLaunch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	defer conn.Close()
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		task, ok := w.factory.GetTaskResult(taskID)
-		if !ok {
-			continue
-		}
-
-		err := conn.WriteJSON(map[string]interface{}{
-			"status": task.Status,
-			"log": fmt.Sprintf("[%s] Task %s: %s", time.Now().Format("15:04:05"), taskID, task.Status),
-		})
-
-		if task.Status == "completed" || task.Status == "failed" {
-			conn.WriteJSON(map[string]interface{}{
-				"status": task.Status,
-				"result": task.Result,
-				"error": task.Error,
-			})
-			break
-		}
-	}
-}
-	mux.HandleFunc("/api/tasks/", w.handleTaskStream)
-
-	// Root path serves index.html
-	mux.HandleFunc("/", w.handleRoot)
-
-	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
-	}
-
-	return server
-}
-
-// handleFactoryLaunch launches a factory task
-func (w *webServer) handleFactoryLaunch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.writeJSON(map[string]string{"error": "method not allowed"})
+	action := strings.TrimPrefix(r.URL.Path, "/api/factory/launch/")
+	taskType, ok := launchTaskTypes[action]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown launch action: " + action})
 		return
 	}
 
 	var req struct {
-		SpecID      string                 `json:"spec_id"`
-		TaskType    string                 `json:"task_type"`
-		Parameters  map[string]interface{} `json:"parameters"`
+		SpecID     string                 `json:"spec_id"`
+		Priority   int                    `json:"priority"`
+		Parameters map[string]interface{} `json:"parameters"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.writeJSON(map[string]string{"error": "invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-
 	if req.SpecID == "" {
-		w.writeJSON(map[string]string{"error": "spec_id is required"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "spec_id is required"})
 		return
+	}
+	if req.Priority == 0 {
+		req.Priority = 1
 	}
 
 	task := &factory.Task{
-		Type:       req.TaskType,
+		Type:       taskType,
 		SpecID:     req.SpecID,
-		Priority:   1,
+		Priority:   req.Priority,
 		Parameters: req.Parameters,
 	}
-
-	if err := w.factory.SubmitTask(task); err != nil {
-		w.writeJSON(map[string]string{"error": err.Error()})
+	if err := s.factory.SubmitTask(task); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
 
-	w.writeJSON(map[string]interface{}{
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
 		"task_id": task.ID,
-		"status":  "queued",
-		"message": "Factory task launched successfully",
+		"status":  task.Status,
+		"action":  action,
+		"type":    taskType,
 	})
 }
 
-func (w *webServer) handleHarnessStatus(w http.ResponseWriter, r *http.Request) {
-	// Return harness status
-	w.writeJSON(map[string]interface{}{
-		"status": "ready",
-	})
-}
+// handleTask serves GET /api/tasks/{id} (snapshot) and
+// GET /api/tasks/{id}/stream (Server-Sent Events until a terminal state).
+func (s *webServer) handleTask(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
+	taskID := strings.TrimSuffix(rest, "/stream")
+	streaming := strings.HasSuffix(rest, "/stream")
 
-func (w *webServer) handleListSpecs(w http.ResponseWriter, r *http.Request) {
-	if w.factoryDef == nil {
-		w.writeJSON(map[string]interface{}{
-			"specs": []interface{}{},
-		})
+	if taskID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "task id required"})
 		return
 	}
 
+	if !streaming {
+		task, ok := s.factory.GetTaskResult(taskID)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, taskView(task))
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	var lastStatus state.State
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			task, ok := s.factory.GetTaskResult(taskID)
+			if !ok {
+				continue
+			}
+			if task.Status != lastStatus {
+				lastStatus = task.Status
+				payload, _ := json.Marshal(taskView(task))
+				fmt.Fprintf(w, "data: %s\n\n", payload)
+				flusher.Flush()
+			}
+			if factory.TaskMachine.IsTerminal(task.Status) {
+				return
+			}
+		}
+	}
+}
+
+// taskView is the JSON shape served for a task.
+func taskView(task *factory.Task) map[string]interface{} {
+	return map[string]interface{}{
+		"id":       task.ID,
+		"type":     task.Type,
+		"spec_id":  task.SpecID,
+		"status":   task.Status,
+		"terminal": factory.TaskMachine.IsTerminal(task.Status),
+		"retries":  task.Retries,
+		"result":   task.Result,
+		"error":    task.Error,
+	}
+}
+
+// handleStateMachines exposes every state machine declaration so clients and
+// agents can introspect lifecycles instead of hardcoding them.
+func (s *webServer) handleStateMachines(w http.ResponseWriter, r *http.Request) {
+	machines := append(factory.Machines(), verify.PhaseMachine)
+	exports := make([]state.Export, 0, len(machines))
+	for _, m := range machines {
+		exports = append(exports, m.Export())
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"machines": exports})
+}
+
+func (s *webServer) handleHarnessStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ready"})
+}
+
+func (s *webServer) handleListSpecs(w http.ResponseWriter, r *http.Request) {
 	specs := make([]map[string]interface{}, 0)
-	for _, workflow := range w.factoryDef.Factory.Workflows {
-		specs = append(specs, map[string]interface{}{
-			"id":   workflow.ID,
-			"steps": len(workflow.Steps),
-		})
+	if s.factoryDef != nil {
+		for _, workflow := range s.factoryDef.Factory.Workflows {
+			specs = append(specs, map[string]interface{}{
+				"id":    workflow.ID,
+				"steps": len(workflow.Steps),
+			})
+		}
 	}
-
-	w.writeJSON(map[string]interface{}{
-		"specs": specs,
-	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"specs": specs})
 }
 
-func (w *webServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
-	if w.factoryDef == nil {
-		w.writeJSON(map[string]interface{}{
-			"agents": []interface{}{},
-		})
-		return
-	}
-
+func (s *webServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	agents := make([]map[string]interface{}, 0)
-	for _, a := range w.factoryDef.Factory.Agents {
-		agents = append(agents, map[string]interface{}{
-			"id":           a.ID,
-			"role":         a.Role,
-			"capabilities": a.Capabilities,
-			"model":        a.Model,
-		})
+	if s.factoryDef != nil {
+		for _, a := range s.factoryDef.Factory.Agents {
+			agents = append(agents, map[string]interface{}{
+				"id":           a.ID,
+				"role":         a.Role,
+				"capabilities": a.Capabilities,
+				"model":        a.Model,
+			})
+		}
 	}
-
-	w.writeJSON(map[string]interface{}{
-		"agents": agents,
-	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": agents})
 }
 
-func (w *webServer) handleRoot(w http.ResponseWriter, r *http.Request) {
+func (s *webServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
@@ -217,81 +264,28 @@ func (w *webServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "./web/index.html")
 }
 
-// writeJSON writes a JSON response
-func (w *webServer) writeJSON(data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w.ResponseWriter).Encode(data)
-}
-
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+	addr := "localhost:8080"
+	if len(os.Args) > 1 {
+		addr = os.Args[1]
 	}
 
-	command := os.Args[1]
 	workingDir, _ := os.Getwd()
-
-	switch command {
-	case "init":
-		initProject(workingDir)
-	case "web":
-		runWebServer(workingDir)
-	case "help", "-h", "--help":
-		printUsage()
-	default:
-		fmt.Printf("Unknown command: %s\n", command)
-		printUsage()
-		os.Exit(1)
-	}
-}
-
-func runWebServer(workingDir string) {
-	fmt.Println("Starting ASF Web Server...")
-
-	// Create web server
 	server, err := newWebServer(workingDir)
 	if err != nil {
 		log.Fatalf("Error creating web server: %v", err)
 	}
 
-	// Start HTTP server
-	addr := "localhost:8080"
-	if len(os.Args) > 2 {
-		addr = os.Args[2]
-	}
+	fmt.Printf("ASF Web Server starting on %s\n", addr)
+	fmt.Println("Endpoints:")
+	fmt.Println("  GET  /api/factory/status        - Factory status")
+	fmt.Println("  POST /api/factory/launch/{a}    - Launch a task (review|bugfix|feature|eval|refactor|migrate)")
+	fmt.Println("  GET  /api/tasks/{id}            - Task snapshot")
+	fmt.Println("  GET  /api/tasks/{id}/stream     - Task state stream (SSE, ends at terminal state)")
+	fmt.Println("  GET  /api/state-machines        - State machine declarations")
+	fmt.Println("  GET  /api/specs | /api/agents | /api/harness/status")
 
-	srv := startHTTPServer(server, addr)
-
-	fmt.Printf("ASF Web Server starting on %s...\n", addr)
-	fmt.Println("Available endpoints:")
-	fmt.Println("  GET  /              - Web interface")
-	fmt.Println("  GET  /static/*      - Static files")
-	fmt.Println("  GET  /templates/*   - Template files")
-	fmt.Println("  GET  /api/factory/status  - Factory status")
-	fmt.Println("  GET  /api/harness/status  - Harness status")
-	fmt.Println("  GET  /api/specs       - List specifications")
-	fmt.Println("  GET  /api/agents      - List agents")
-	fmt.Println("  Press Ctrl+C to stop")
-
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := http.ListenAndServe(addr, server.routes()); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
-}
-
-func printUsage() {
-	fmt.Print(`ASF Web Server - Agentic Software Factory Web Interface
-
-Usage: asf web [address]
-
-Commands:
-  init              Initialize a new ASF project structure
-  web               Start the web server (default: localhost:8080)
-  help              Show this help
-
-Examples:
-  asf init
-  asf web
-  asf web :8080
-`)
 }

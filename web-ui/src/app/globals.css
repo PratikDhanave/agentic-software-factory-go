@@ -1,3 +1,449 @@
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light theme - Google Material Design */
+    --color-surface: #ffffff;
+    --color-surface-container: #f5f5f5;
+    --color-on-surface: #1c1c1e;
+    --color-on-surface-variant: #49454f;
+    --color-primary: #3f51b5;
+    --color-on-primary: #ffffff;
+    --color-primary-container: #e8eaf6;
+    --color-on-primary-container: #1a237e;
+    --color-secondary: #3f51b5;
+    --color-on-secondary: #ffffff;
+    --color-secondary-container: #e8eaf6;
+    --color-on-secondary-container: #1a237e;
+    --color-tertiary: #6a1b9a;
+    --color-on-tertiary: #ffffff;
+    --color-tertiary-container: #f3e5f5;
+    --color-on-tertiary-container: #4a148c;
+    --color-error: #f44336;
+    --color-on-error: #ffffff;
+    --color-error-container: #ffebee;
+    --color-on-error-container: #b71c1c;
+    --color-outline: #757575;
+    --color-outline-variant: #cac4d0;
+    --color-shadow: rgba(0, 0, 0, 0.3);
+    --color-surface-tint: #3f51b5;
+    --color-scrim: rgba(0, 0, 0, 0.6);
+  }
+
+  .dark {
+    /* Dark theme - Google Material Design 3 */
+    --color-surface: #1e1e1e;
+    --color-surface-container: #2d2d2d;
+    --color-on-surface: #e6e1e5;
+    --color-on-surface-variant: #cac4d0;
+    --color-primary: #8c9eff;
+    --color-on-primary: #001d6d;
+    --color-primary-container: #283593;
+    --color-on-primary-container: #e8eaf6;
+    --color-secondary: #8c9eff;
+    --color-on-secondary: #001d6d;
+    --color-secondary-container: #283593;
+    --color-on-secondary-container: #e8eaf6;
+    --color-tertiary: #e1bee7;
+    --color-on-tertiary: #31113a;
+    --color-tertiary-container: #4a148c;
+    --color-on-tertiary-container: #f3e5f5;
+    --color-error: #f2b8b5;
+    --color-on-error: #690005;
+    --color-error-container: #93000a;
+    --color-on-error-container: #ffdad6;
+    --color-outline: #8e8e93;
+    --color-outline-variant: #49454f;
+    --color-shadow: rgba(0, 0, 0, 0.5);
+    --color-surface-tint: #8c9eff;
+    --color-scrim: rgba(0, 0, 0, 0.8);
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    font-family: 'Google Sans', 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    font-family: 'Google Sans', 'Inter', system-ui, sans-serif;
+    background-color: var(--color-surface);
+    color: var(--color-on-surface);
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Google Sans', 'Inter', system-ui, sans-serif;
+    font-weight: 400;
+    line-height: 1.2;
+    color: var(--color-on-surface);
+  }
+
+  a {
+    color: var(--color-primary);
+    text-decoration: none;
+    transition: color 0.2s ease;
+  }
+
+  a:hover {
+    color: var(--color-primary-container);
+  }
+
+  /* Focus styles for accessibility */
+  *:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--color-primary-container);
+    color: var(--color-on-primary-container);
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--color-surface-container);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-outline);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-on-surface-variant);
+  }
+}
+
+@layer components {
+  /* Material Design Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-all duration-200;
+    @apply focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+    font-family: 'Google Sans', 'Inter', system-ui, sans-serif;
+    font-weight: 500;
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.1px;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-on-primary hover:bg-primary/90;
+    @apply shadow-elevation-1 hover:shadow-elevation-2;
+  }
+
+  .btn-secondary {
+    @apply bg-primary-container text-on-primary-container hover:bg-primary-container/90;
+    @apply shadow-none border border-outline-variant;
+  }
+
+  .btn-outlined {
+    @apply bg-transparent text-primary border border-primary hover:bg-primary/10;
+  }
+
+  .btn-text {
+    @apply bg-transparent text-primary hover:bg-primary/10;
+    @apply px-3 py-2;
+  }
+
+  .btn-icon {
+    @apply p-2 rounded-full;
+  }
+
+  /* Material Design Cards */
+  .card {
+    @apply bg-surface rounded-xl border border-outline-variant/50;
+    @apply shadow-elevation-1;
+    @apply transition-all duration-300;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-outline-variant);
+    border-radius: 16px;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.3), 0 1px 3px 1px rgba(0, 0, 0, 0.15);
+  }
+
+  .card:hover {
+    @apply shadow-elevation-2;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+  }
+
+  .card-elevated {
+    @apply shadow-elevation-3;
+  }
+
+  /* Material Design Chips */
+  .chip {
+    @apply inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium;
+    @apply bg-primary-container text-on-primary-container;
+    @apply transition-colors duration-200;
+  }
+
+  .chip-outlined {
+    @apply bg-transparent border border-outline-variant text-on-surface-variant;
+    @apply hover:bg-surface-container;
+  }
+
+  /* Material Design Text Fields */
+  .text-field {
+    @apply w-full px-4 py-3 rounded-lg bg-surface border border-outline-variant text-on-surface;
+    @apply placeholder:text-on-surface-variant/60;
+    @apply focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent;
+    @apply disabled:bg-surface-container disabled:cursor-not-allowed;
+    @apply transition-all duration-200;
+    border-radius: 12px;
+    border: 1px solid var(--color-outline-variant);
+    background-color: var(--color-surface);
+    color: var(--color-on-surface);
+    font-size: 16px;
+    line-height: 1.5;
+    padding: 12px 16px;
+  }
+
+  .text-field:focus {
+    outline: none;
+    ring: 2px solid var(--color-primary);
+    ring-offset: 2px;
+    border-color: transparent;
+    box-shadow: 0 0 0 2px var(--color-primary);
+  }
+
+  .text-field::placeholder {
+    color: var(--color-on-surface-variant);
+    opacity: 0.6;
+  }
+
+  .text-field:disabled {
+    background-color: var(--color-surface-container);
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+
+  /* Material Design Select */
+  .select-field {
+    @apply w-full px-4 py-3 rounded-lg bg-surface border border-outline-variant text-on-surface;
+    @apply focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent;
+    @apply appearance-none bg-no-repeat bg-right pr-10;
+    @apply cursor-pointer;
+    @apply transition-all duration-200;
+    border-radius: 12px;
+    border: 1px solid var(--color-outline-variant);
+    background-color: var(--color-surface);
+    color: var(--color-on-surface);
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 12px 40px 12px 16px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 20px;
+  }
+
+  .select-field:focus {
+    outline: none;
+    ring: 2px solid var(--color-primary);
+    ring-offset: 2px;
+    border-color: transparent;
+    box-shadow: 0 0 0 2px var(--color-primary);
+  }
+
+  /* Material Design Badges */
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+    @apply transition-colors duration-200;
+  }
+
+  .badge-success {
+    @apply bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400;
+  }
+
+  .badge-error {
+    @apply bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400;
+  }
+
+  .badge-warning {
+    @apply bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400;
+  }
+
+  .badge-info {
+    @apply bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400;
+  }
+
+  .badge-neutral {
+    @apply bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400;
+  }
+
+  /* Material Design Tabs */
+  .tabs {
+    @apply flex border-b border-outline-variant;
+  }
+
+  .tab {
+    @apply px-4 py-3 text-sm font-medium text-on-surface-variant border-b-2 border-transparent;
+    @apply hover:text-on-surface transition-all duration-200;
+    @apply cursor-pointer;
+  }
+
+  .tab-active {
+    @apply text-primary border-b-2 border-primary;
+  }
+
+  /* Material Design Dialog/Modal */
+  .dialog {
+    @apply fixed inset-0 z-50 flex items-center justify-center p-4;
+    @apply bg-scrim/80;
+  }
+
+  .dialog-content {
+    @apply bg-surface rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-auto;
+    @apply shadow-elevation-5;
+    background-color: var(--color-surface);
+    border-radius: 28px;
+    box-shadow: 0 24px 38px 3px rgba(0, 0, 0, 0.14), 0 9px 46px 8px rgba(0, 0, 0, 0.14), 0 11px 15px -7px rgba(0, 0, 0, 0.14);
+  }
+
+  /* Material Design Snackbar/Toast */
+  .snackbar {
+    @apply fixed bottom-6 left-1/2 -translate-x-1/2 z-50;
+    @apply bg-on-surface text-on-surface px-4 py-3 rounded-lg;
+    @apply flex items-center gap-3 max-w-md;
+    @apply shadow-elevation-3;
+    @apply animate-slide-up;
+    background-color: var(--color-on-surface);
+    color: var(--color-surface);
+    border-radius: 8px;
+    box-shadow: 0 6px 10px 4px rgba(0, 0, 0, 0.15), 0 2px 3px 0 rgba(0, 0, 0, 0.3);
+  }
+
+  /* Material Design Lists */
+  .list {
+    @apply divide-y divide-outline-variant;
+  }
+
+  .list-item {
+    @apply flex items-center gap-3 px-4 py-3 hover:bg-surface-container transition-colors duration-150;
+  }
+
+  /* Material Design Dividers */
+  .divider {
+    @apply h-px bg-outline-variant my-4;
+  }
+
+  /* Material Design Tooltips */
+  .tooltip {
+    @apply absolute z-50 px-3 py-1.5 rounded-lg text-xs font-medium text-on-surface;
+    @apply shadow-elevation-3;
+    @apply animate-fade-in;
+    background-color: var(--color-on-surface);
+    color: var(--color-surface);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+    line-height: 16px;
+    white-space: nowrap;
+    box-shadow: 0 6px 10px 4px rgba(0, 0, 0, 0.15), 0 2px 3px 0 rgba(0, 0, 0, 0.3);
+  }
+
+  /* Animations */
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 200ms ease-out;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 300ms ease-out;
+  }
+
+  .animate-scale-in {
+    animation: scaleIn 200ms ease-out;
+  }
+
+  /* Utility Classes */
+  .text-on-surface { color: var(--color-on-surface); }
+  .text-on-surface-variant { color: var(--color-on-surface-variant); }
+  .text-primary { color: var(--color-primary); }
+  .text-on-primary { color: var(--color-on-primary); }
+  .text-on-primary-container { color: var(--color-on-primary-container); }
+  .text-on-surface-variant { color: var(--color-on-surface-variant); }
+
+  .bg-surface { background-color: var(--color-surface); }
+  .bg-surface-container { background-color: var(--color-surface-container); }
+  .bg-primary { background-color: var(--color-primary); }
+  .bg-primary-container { background-color: var(--color-primary-container); }
+  .bg-surface-container { background-color: var(--color-surface-container); }
+  .bg-error-container { background-color: var(--color-error-container); }
+
+  .border-outline-variant { border-color: var(--color-outline-variant); }
+  .border-outline { border-color: var(--color-outline); }
+
+  .shadow-elevation-1 {
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.3), 0 1px 3px 1px rgba(0, 0, 0, 0.15);
+  }
+  .shadow-elevation-2 {
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+  }
+  .shadow-elevation-3 {
+    box-shadow: 0 4px 8px 3px rgba(0, 0, 0, 0.15), 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+  }
+  .shadow-elevation-4 {
+    box-shadow: 0 6px 10px 4px rgba(0, 0, 0, 0.15), 0 2px 3px 0 rgba(0, 0, 0, 0.3);
+  }
+  .shadow-elevation-5 {
+    box-shadow: 0 8px 12px 6px rgba(0, 0, 0, 0.15), 0 4px 5px 0 rgba(0, 0, 0, 0.3);
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .animate-in {
+    animation: fadeIn 200ms ease-out, slideUp 300ms ease-out;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-outline) var(--color-surface-container);
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}

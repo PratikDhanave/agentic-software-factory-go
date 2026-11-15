@@ -279,15 +279,15 @@ func (a *githubAdapter) HandleCommentEvent(payload []byte) error {
 		return fmt.Errorf("failed to parse comment event: %w", err)
 	}
 
-	log.Printf("GitHub Comment event: action=%s, comment on #%s, repo=%s", commentEvent.Action, commentEvent.Comment.ID, commentEvent.Repository.FullName)
+	log.Printf("GitHub Comment event: action=%s, comment on #%d, repo=%s", commentEvent.Action, commentEvent.Comment.ID, commentEvent.Repository.FullName)
 
 	switch commentEvent.Action {
 	case "created":
-		log.Printf("Comment created on issue/PR #%s in %s by %s", commentEvent.Comment.ID, commentEvent.Repository.FullName, commentEvent.Sender.Login)
+		log.Printf("Comment created on issue/PR #%d in %s by %s", commentEvent.Comment.ID, commentEvent.Repository.FullName, commentEvent.Sender.Login)
 	case "edited":
-		log.Printf("Comment edited on issue/PR #%s in %s by %s", commentEvent.Comment.ID, commentEvent.Repository.FullName, commentEvent.Sender.Login)
+		log.Printf("Comment edited on issue/PR #%d in %s by %s", commentEvent.Comment.ID, commentEvent.Repository.FullName, commentEvent.Sender.Login)
 	case "deleted":
-		log.Printf("Comment deleted from issue/PR #%s in %s", commentEvent.Comment.ID, commentEvent.Repository.FullName)
+		log.Printf("Comment deleted from issue/PR #%d in %s", commentEvent.Comment.ID, commentEvent.Repository.FullName)
 	default:
 		log.Printf("Unhandled comment action: %s", commentEvent.Action)
 	}

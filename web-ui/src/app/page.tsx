@@ -1,6 +1,7 @@
 import Image from 'next/image'
 import { Inter } from 'next/font/google'
 import { LaunchPad } from '@/components/LaunchPad'
+import { statusBadge } from '@/lib/statusBadge'
 
 const inter = Inter({ subsets: ['latin'], weight: ['400', '500', '600'] })
 
@@ -118,11 +119,7 @@ function ActivityFeed() {
       {activities.map((item, i) => (
         <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
           <div className="text-sm font-mono text-gray-500 w-10">{item.time}</div>
-          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-            item.status === 'success' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' :
-            item.status === 'running' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400' :
-            'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
-          }`}>
+          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${statusBadge[item.status] ?? statusBadge.idle}`}>
             {item.status}
           </span>
           <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">

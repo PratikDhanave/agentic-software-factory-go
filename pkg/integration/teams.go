@@ -33,7 +33,7 @@ func newTeamsSigVerifier(secret string) *teamsSigVerifier {
 
 // Platform returns the platform this adapter handles
 func (a *TeamsAdapter) Platform() string {
-	return PlatformTeams
+	return string(PlatformTeams)
 }
 
 // VerifyWebhook verifies the webhook signature

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/persistence"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
 	"github.com/google/uuid"
 )
@@ -21,7 +23,7 @@ type Worker struct {
 	ID           string
 	Role         string
 	Capabilities []string
-	Status       string // "idle", "busy", "error"
+	Status       state.State // see WorkerMachine
 	CurrentTask  *Task
 	LastActive   time.Time
 }
@@ -32,7 +34,7 @@ type Task struct {
 	Type        string // "generate", "verify", "review", "refactor"
 	SpecID      string
 	Priority    int
-	Status      string // "pending", "running", "completed", "failed"
+	Status      state.State // see TaskMachine
 	AssignedTo  string
 	CreatedAt   time.Time
 	StartedAt   *time.Time
@@ -40,6 +42,25 @@ type Task struct {
 	Result      interface{}
 	Error       string
 	Retries     int
+	Parameters  map[string]interface{}
+}
+
+// setTaskState applies a task state transition, logging any violation of
+// TaskMachine. Violations are logged rather than rejected so an undeclared
+// transition surfaces loudly in development without halting the factory.
+func setTaskState(task *Task, to state.State) {
+	if err := TaskMachine.Validate(task.Status, to); err != nil {
+		log.Printf("factory: task %s: %v", task.ID, err)
+	}
+	task.Status = to
+}
+
+// setWorkerState applies a worker state transition under the same policy.
+func setWorkerState(worker *Worker, to state.State) {
+	if err := WorkerMachine.Validate(worker.Status, to); err != nil {
+		log.Printf("factory: worker %s: %v", worker.ID, err)
+	}
+	worker.Status = to
 }
 
 // FactoryOrchestrator manages the distributed agent factory
@@ -103,7 +124,7 @@ func (fo *FactoryOrchestrator) addWorker(id, role string, capabilities []string)
 		ID:           id,
 		Role:         role,
 		Capabilities: capabilities,
-		Status:       "idle",
+		Status:       WorkerMachine.Initial(),
 		LastActive:   time.Now(),
 	}
 	fo.workerCount++
@@ -115,7 +136,7 @@ func (fo *FactoryOrchestrator) addWorker(id, role string, capabilities []string)
 		ID:           id,
 		Role:         role,
 		Capabilities: string(capsJSON),
-		Status:       "idle",
+		Status:       string(WorkerMachine.Initial()),
 		LastActive:   time.Now(),
 	})
 }
@@ -147,7 +168,7 @@ func (fo *FactoryOrchestrator) SubmitTask(task *Task) error {
 	if task.ID == "" {
 		task.ID = uuid.New().String()
 	}
-	task.Status = "pending"
+	task.Status = TaskMachine.Initial()
 	task.CreatedAt = time.Now()
 
 	select {
@@ -159,7 +180,7 @@ func (fo *FactoryOrchestrator) SubmitTask(task *Task) error {
 			Type:      task.Type,
 			SpecID:    task.SpecID,
 			Priority:  task.Priority,
-			Status:    task.Status,
+			Status:    string(task.Status),
 			CreatedAt: task.CreatedAt,
 			Retries:   task.Retries,
 		})
@@ -178,91 +199,47 @@ func (fo *FactoryOrchestrator) GetTaskResult(taskID string) (*Task, bool) {
 	return task, ok
 }
 
+// taskFromRecord rebuilds an in-memory Task from its persisted record.
+func taskFromRecord(t *persistence.TaskRecord) *Task {
+	return &Task{
+		ID:          t.ID,
+		Type:        t.Type,
+		SpecID:      t.SpecID,
+		Priority:    t.Priority,
+		Status:      state.State(t.Status),
+		AssignedTo:  t.AssignedTo,
+		CreatedAt:   t.CreatedAt,
+		StartedAt:   t.StartedAt,
+		CompletedAt: t.CompletedAt,
+		Error:       t.Error,
+		Retries:     t.Retries,
+	}
+}
+
 // restoreTasks restores persisted tasks from storage
 func (fo *FactoryOrchestrator) restoreTasks() error {
 	ctx := context.Background()
 
-	// Restore pending tasks
-	pendingTasks, err := fo.persistence.GetTasksByStatus(ctx, "pending")
-	if err != nil {
-		return err
-	}
-
-	for _, t := range pendingTasks {
-		task := &Task{
-			ID:          t.ID,
-			Type:        t.Type,
-			SpecID:      t.SpecID,
-			Priority:    t.Priority,
-			Status:      t.Status,
-			AssignedTo:  t.AssignedTo,
-			CreatedAt:   t.CreatedAt,
-			StartedAt:   t.StartedAt,
-			CompletedAt: t.CompletedAt,
-			Error:       t.Error,
-			Retries:     t.Retries,
+	for _, status := range TaskMachine.States() {
+		records, err := fo.persistence.GetTasksByStatus(ctx, string(status))
+		if err != nil {
+			return err
 		}
-		fo.results[task.ID] = task
-		fo.taskQueue <- task
-	}
 
-	// Restore running tasks (mark as pending for retry)
-	runningTasks, err := fo.persistence.GetTasksByStatus(ctx, "running")
-	if err != nil {
-		return err
-	}
+		for _, t := range records {
+			task := taskFromRecord(t)
 
-	for _, t := range runningTasks {
-		task := &Task{
-			ID:          t.ID,
-			Type:        t.Type,
-			SpecID:      t.SpecID,
-			Priority:    t.Priority,
-			Status:      "pending", // Re-queue running tasks
-			AssignedTo:  t.AssignedTo,
-			CreatedAt:   t.CreatedAt,
-			Retries:     t.Retries,
+			// Crash recovery: a task persisted as "running" was interrupted
+			// mid-execution; re-queue it (explicit running -> pending transition).
+			if task.Status == TaskRunning {
+				setTaskState(task, TaskPending)
+			}
+
+			fo.results[task.ID] = task
+			if task.Status == TaskPending {
+				fo.taskQueue <- task
+			}
 		}
-		fo.results[task.ID] = task
-		fo.taskQueue <- task
-	}
-
-	// Restore completed/failed tasks
-	completedTasks, _ := fo.persistence.GetTasksByStatus(ctx, "completed")
-	failedTasks, _ := fo.persistence.GetTasksByStatus(ctx, "failed")
-
-	for _, t := range completedTasks {
-		task := &Task{
-			ID:          t.ID,
-			Type:        t.Type,
-			SpecID:      t.SpecID,
-			Priority:    t.Priority,
-			Status:      t.Status,
-			AssignedTo:  t.AssignedTo,
-			CreatedAt:   t.CreatedAt,
-			StartedAt:   t.StartedAt,
-			CompletedAt: t.CompletedAt,
-			Error:       t.Error,
-			Retries:     t.Retries,
-		}
-		fo.results[task.ID] = task
-	}
-
-	for _, t := range failedTasks {
-		task := &Task{
-			ID:          t.ID,
-			Type:        t.Type,
-			SpecID:      t.SpecID,
-			Priority:    t.Priority,
-			Status:      t.Status,
-			AssignedTo:  t.AssignedTo,
-			CreatedAt:   t.CreatedAt,
-			StartedAt:   t.StartedAt,
-			CompletedAt: t.CompletedAt,
-			Error:       t.Error,
-			Retries:     t.Retries,
-		}
-		fo.results[task.ID] = task
 	}
 
 	// Restore workers
@@ -278,7 +255,7 @@ func (fo *FactoryOrchestrator) restoreTasks() error {
 			ID:           w.ID,
 			Role:         w.Role,
 			Capabilities: caps,
-			Status:       w.Status,
+			Status:       state.State(w.Status),
 			LastActive:   w.LastActive,
 		}
 		fo.workerCount++
@@ -306,11 +283,11 @@ func (fo *FactoryOrchestrator) workerLoop(ctx context.Context, worker *Worker) {
 // executeTask executes a single task
 func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, task *Task) {
 	fo.mu.Lock()
-	worker.Status = "busy"
+	setWorkerState(worker, WorkerBusy)
 	worker.CurrentTask = task
 	now := time.Now()
 	task.StartedAt = &now
-	task.Status = "running"
+	setTaskState(task, TaskRunning)
 	task.AssignedTo = worker.ID
 	fo.mu.Unlock()
 
@@ -320,7 +297,7 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 		Type:       task.Type,
 		SpecID:     task.SpecID,
 		Priority:   task.Priority,
-		Status:     task.Status,
+		Status:     string(task.Status),
 		AssignedTo: task.AssignedTo,
 		CreatedAt:  task.CreatedAt,
 		StartedAt:  task.StartedAt,
@@ -342,7 +319,7 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 	}
 
 	fo.mu.Lock()
-	worker.Status = "idle"
+	setWorkerState(worker, WorkerIdle)
 	worker.CurrentTask = nil
 	worker.LastActive = time.Now()
 
@@ -350,20 +327,23 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 	task.CompletedAt = &completedAt
 
 	if err != nil {
-		task.Status = "failed"
 		task.Error = err.Error()
 		task.Retries++
-		// Re-queue if retries available
 		if task.Retries < 3 {
-			task.Status = "pending"
+			// Retryable failure: re-queue (running -> pending).
+			setTaskState(task, TaskPending)
 			select {
 			case fo.taskQueue <- task:
 			default:
-				// Queue full, drop task
+				// Queue full; retries exhausted for all practical purposes.
+				setTaskState(task, TaskFailed)
 			}
+		} else {
+			// Retries exhausted (running -> failed, terminal).
+			setTaskState(task, TaskFailed)
 		}
 	} else {
-		task.Status = "completed"
+		setTaskState(task, TaskCompleted)
 	}
 
 	fo.results[task.ID] = task
@@ -377,7 +357,7 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 		Type:         task.Type,
 		SpecID:       task.SpecID,
 		Priority:     task.Priority,
-		Status:       task.Status,
+		Status:       string(task.Status),
 		AssignedTo:   task.AssignedTo,
 		CreatedAt:    task.CreatedAt,
 		StartedAt:    task.StartedAt,
@@ -390,7 +370,7 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 		ID:           worker.ID,
 		Role:         worker.Role,
 		Capabilities: string(capsJSON),
-		Status:       worker.Status,
+		Status:       string(worker.Status),
 		LastActive:   worker.LastActive,
 	})
 }
@@ -492,7 +472,7 @@ func (fo *FactoryOrchestrator) rebalanceWorkers() {
 	// Count busy workers
 	busy := 0
 	for _, w := range fo.workers {
-		if w.Status == "busy" {
+		if w.Status == WorkerBusy {
 			busy++
 		}
 	}
@@ -507,7 +487,7 @@ func (fo *FactoryOrchestrator) rebalanceWorkers() {
 	if idle > 2 && fo.workerCount > 2 {
 		// Find and remove an idle worker
 		for id, w := range fo.workers {
-			if w.Status == "idle" && w.CurrentTask == nil {
+			if w.Status == WorkerIdle && w.CurrentTask == nil {
 				delete(fo.workers, id)
 				fo.workerCount--
 				break
@@ -524,7 +504,7 @@ func (fo *FactoryOrchestrator) GetFactoryStatus() map[string]interface{} {
 	busy := 0
 	idle := 0
 	for _, w := range fo.workers {
-		if w.Status == "busy" {
+		if w.Status == WorkerBusy {
 			busy++
 		} else {
 			idle++
@@ -535,9 +515,9 @@ func (fo *FactoryOrchestrator) GetFactoryStatus() map[string]interface{} {
 	completed := 0
 	failed := 0
 	for _, t := range fo.results {
-		if t.Status == "completed" {
+		if t.Status == TaskCompleted {
 			completed++
-		} else if t.Status == "failed" {
+		} else if t.Status == TaskFailed {
 			failed++
 		}
 	}

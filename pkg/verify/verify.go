@@ -6,7 +6,28 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
 )
+
+// Verification pipeline phases. The pipeline advances phase by phase and
+// stops at the first failing phase.
+const (
+	PhaseBuild       state.State = "build"
+	PhaseTest        state.State = "test"
+	PhaseLint        state.State = "lint"
+	PhaseConstraints state.State = "constraints"
+	PhasePassed      state.State = "passed"
+	PhaseFailed      state.State = "failed"
+)
+
+// PhaseMachine is the explicit verification pipeline.
+var PhaseMachine = state.NewMachine("verification", PhaseBuild, map[state.State][]state.State{
+	PhaseBuild:       {PhaseTest, PhaseFailed},
+	PhaseTest:        {PhaseLint, PhaseFailed},
+	PhaseLint:        {PhaseConstraints, PhasePassed, PhaseFailed},
+	PhaseConstraints: {PhasePassed, PhaseFailed},
+})
 
 // VerificationEngine runs AI-TDD verification loops
 type VerificationEngine struct {
@@ -20,6 +41,8 @@ type VerificationEngine struct {
 // VerificationResult represents the outcome of a verification run
 type VerificationResult struct {
 	Success         bool
+	Phase           state.State // final phase: PhasePassed or PhaseFailed
+	FailedPhase     state.State // which phase failed, if any
 	TestOutput      string
 	LintOutput      string
 	BuildOutput     string
@@ -49,7 +72,31 @@ func NewVerificationEngine(workingDir string) *VerificationEngine {
 	}
 }
 
-// RunVerification runs the complete verification loop
+// phaseStep binds a pipeline phase to its implementation.
+type phaseStep struct {
+	phase state.State
+	run   func(context.Context, *VerificationResult) error
+}
+
+// pipeline returns the phase sequence for this run. The constraints phase
+// only participates when a spec path is provided.
+func (e *VerificationEngine) pipeline(specPath string) []phaseStep {
+	steps := []phaseStep{
+		{PhaseBuild, e.verifyBuild},
+		{PhaseTest, e.verifyTests},
+		{PhaseLint, e.verifyLint},
+	}
+	if specPath != "" {
+		steps = append(steps, phaseStep{PhaseConstraints, func(ctx context.Context, r *VerificationResult) error {
+			return e.verifyConstraints(ctx, specPath, r)
+		}})
+	}
+	return steps
+}
+
+// RunVerification runs the complete verification pipeline, stopping at the
+// first failing phase. The result records which phase it reached and, on
+// failure, which phase failed.
 func (e *VerificationEngine) RunVerification(ctx context.Context, specPath string) (*VerificationResult, error) {
 	result := &VerificationResult{
 		Errors: make([]VerificationError, 0),
@@ -60,29 +107,21 @@ func (e *VerificationEngine) RunVerification(ctx context.Context, specPath strin
 		result.Duration = time.Since(start)
 	}()
 
-	// Phase 1: Build verification
-	if err := e.verifyBuild(ctx, result); err != nil {
-		return result, fmt.Errorf("build verification failed: %w", err)
-	}
-
-	// Phase 2: Test verification
-	if err := e.verifyTests(ctx, result); err != nil {
-		return result, fmt.Errorf("test verification failed: %w", err)
-	}
-
-	// Phase 3: Lint verification
-	if err := e.verifyLint(ctx, result); err != nil {
-		return result, fmt.Errorf("lint verification failed: %w", err)
-	}
-
-	// Phase 4: Constraint verification (if spec provided)
-	if specPath != "" {
-		if err := e.verifyConstraints(ctx, specPath, result); err != nil {
-			return result, fmt.Errorf("constraint verification failed: %w", err)
+	for _, step := range e.pipeline(specPath) {
+		result.Phase = step.phase
+		if err := step.run(ctx, result); err != nil {
+			result.FailedPhase = step.phase
+			result.Phase = PhaseFailed
+			return result, fmt.Errorf("%s verification failed: %w", step.phase, err)
 		}
 	}
 
 	result.Success = len(result.Errors) == 0
+	if result.Success {
+		result.Phase = PhasePassed
+	} else {
+		result.Phase = PhaseFailed
+	}
 	return result, nil
 }
 
