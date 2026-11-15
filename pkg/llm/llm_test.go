@@ -1,6 +1,10 @@
 package llm_test
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -27,6 +31,9 @@ func clearEnv(t *testing.T) {
 	t.Setenv("ASF_MODEL", "")
 	t.Setenv("ASF_ENABLE_LLM", "")
 	t.Setenv("ANTHROPIC_CONFIG_DIR", t.TempDir()) // empty: no ant profile
+	// Point Ollama detection at a dead port so a real local Ollama on the
+	// test machine can't be auto-detected.
+	t.Setenv("OLLAMA_HOST", "127.0.0.1:1")
 }
 
 func TestNoConfigurationIsPromptOnly(t *testing.T) {
@@ -104,6 +111,70 @@ func TestOpenAICompatibleWithoutBaseURL(t *testing.T) {
 	}
 	if msg := llm.ConfigError(); !strings.Contains(msg, "ASF_LLM_BASE_URL") {
 		t.Errorf("expected ConfigError to mention ASF_LLM_BASE_URL, got %q", msg)
+	}
+}
+
+// fakeOllama serves /api/tags (one embedding model first, then a chat
+// model) and /v1/chat/completions.
+func fakeOllama(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"models":[
+			{"name":"nomic-embed-text:latest","details":{"family":"nomic-bert"}},
+			{"name":"test-chat-model:latest","details":{"family":"llama"}}
+		]}`)
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"hello from fake ollama"},"finish_reason":"stop"}]}`)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestOllamaAutoPicksChatModel(t *testing.T) {
+	clearEnv(t)
+	server := fakeOllama(t)
+	t.Setenv("ASF_LLM_PROVIDER", "ollama")
+	t.Setenv("ASF_LLM_BASE_URL", server.URL)
+
+	c := llm.FromEnv()
+	if c == nil || c.Provider() != "ollama" {
+		t.Fatalf("expected ollama provider, got %v", c)
+	}
+	if c.Model() != "test-chat-model:latest" {
+		t.Errorf("expected the embedding model to be skipped, got %s", c.Model())
+	}
+	if msg := llm.ConfigError(); msg != "" {
+		t.Errorf("expected no config error, got %q", msg)
+	}
+}
+
+func TestOllamaGenerateRoundTrip(t *testing.T) {
+	clearEnv(t)
+	server := fakeOllama(t)
+	t.Setenv("ASF_LLM_PROVIDER", "ollama")
+	t.Setenv("ASF_LLM_BASE_URL", server.URL)
+
+	c := llm.FromEnv()
+	out, err := c.Generate(context.Background(), "say hello")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if out != "hello from fake ollama" {
+		t.Errorf("unexpected output %q", out)
+	}
+}
+
+func TestOllamaUnreachableIsExplained(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ASF_LLM_PROVIDER", "ollama") // OLLAMA_HOST points at a dead port
+	if c := llm.FromEnv(); c != nil {
+		t.Fatal("expected nil client when ollama is unreachable")
+	}
+	if msg := llm.ConfigError(); !strings.Contains(msg, "not reachable") {
+		t.Errorf("expected reachability explanation, got %q", msg)
 	}
 }
 

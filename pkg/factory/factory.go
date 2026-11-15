@@ -52,6 +52,24 @@ type Task struct {
 	Parameters  map[string]interface{}
 }
 
+// contextBudgetFor returns the maximum characters of project context to
+// include in a prompt (ASF_CONTEXT_MAX_CHARS overrides). Local models
+// typically run small context windows where a 100K+-token prompt means
+// minutes of prefill per call; large-context cloud models get far more.
+func contextBudgetFor(provider string) int {
+	if v := os.Getenv("ASF_CONTEXT_MAX_CHARS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	switch provider {
+	case "ollama", "openai-compatible":
+		return 24_000 // ~6K tokens — fits typical local context windows
+	default:
+		return 400_000 // ~100K tokens for large-context cloud models
+	}
+}
+
 // llmMaxConcurrent returns the cap on concurrent paid LLM calls
 // (ASF_LLM_MAX_CONCURRENT, default 2).
 func llmMaxConcurrent() int {
@@ -94,7 +112,8 @@ type FactoryOrchestrator struct {
 	agent         harness.AgentClient // nil when no LLM provider is configured
 	agentModel    string
 	agentProvider string
-	llmSlots      chan struct{}          // caps concurrent paid LLM calls
+	llmSlots      chan struct{} // caps concurrent paid LLM calls
+	contextBudget int           // max chars of project context per prompt
 	evaluator     *eval.EvaluationEngine // LLM-as-a-judge; nil without credentials
 	evalCriteria  eval.EvaluationCriteria
 	mu            sync.RWMutex
@@ -136,10 +155,11 @@ func NewFactoryOrchestrator(workingDir string, maxWorkers int) (*FactoryOrchestr
 		fo.agentModel = client.Model()
 		fo.agentProvider = client.Provider()
 		fo.llmSlots = make(chan struct{}, llmMaxConcurrent())
+		fo.contextBudget = contextBudgetFor(fo.agentProvider)
 		fo.evaluator = eval.NewEvaluationEngine(client)
 		fo.evalCriteria = eval.DefaultEvaluationCriteria()
-		log.Printf("factory: LLM enabled (provider %s, model %s, max %d concurrent calls, judge threshold %.2f)",
-			fo.agentProvider, fo.agentModel, cap(fo.llmSlots), fo.evalCriteria.Threshold)
+		log.Printf("factory: LLM enabled (provider %s, model %s, max %d concurrent calls, judge threshold %.2f, context budget %d chars)",
+			fo.agentProvider, fo.agentModel, cap(fo.llmSlots), fo.evalCriteria.Threshold, fo.contextBudget)
 	} else if msg := llm.ConfigError(); msg != "" {
 		log.Printf("factory: running in prompt-only mode — %s", msg)
 	} else {
@@ -239,6 +259,13 @@ func (fo *FactoryOrchestrator) SubmitTask(task *Task) error {
 
 	select {
 	case fo.taskQueue <- task:
+		// Register immediately so the task is visible to GetTaskResult /
+		// RecentTasks while still pending or running (long-running LLM
+		// tasks would otherwise 404 until completion).
+		fo.mu.Lock()
+		fo.results[task.ID] = task
+		fo.mu.Unlock()
+
 		// Persist the task
 		ctx := context.Background()
 		_ = fo.persistence.SaveTask(ctx, &persistence.TaskRecord{
@@ -478,7 +505,12 @@ func (fo *FactoryOrchestrator) buildTaskParts(ctx context.Context, specID string
 		return "", "", 0, err
 	}
 
-	return fo.specEngine.GeneratePrompt(s), asfContext.FormatForAgent(contextItems), len(contextItems), nil
+	contextStr = asfContext.FormatForAgent(contextItems)
+	if fo.contextBudget > 0 && len(contextStr) > fo.contextBudget {
+		contextStr = contextStr[:fo.contextBudget] +
+			"\n\n[project context truncated to fit the model's context budget]"
+	}
+	return fo.specEngine.GeneratePrompt(s), contextStr, len(contextItems), nil
 }
 
 // withLLMSlot runs one paid LLM call under the concurrency cap and a

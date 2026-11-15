@@ -10,8 +10,13 @@
 //	                   or an `ant auth login` profile (requires the explicit
 //	                   opt-in ASF_ENABLE_LLM=1, since profiles are ambient).
 //	openai             OpenAI Chat Completions API. Credentials: OPENAI_API_KEY.
-//	openai-compatible  Any server speaking the Chat Completions wire format
-//	                   (Ollama, vLLM, Groq, Mistral, LM Studio, ...).
+//	ollama             A local Ollama server. Zero config: defaults to
+//	                   http://localhost:11434 (override with OLLAMA_HOST or
+//	                   ASF_LLM_BASE_URL) and auto-picks the first installed
+//	                   chat model when ASF_MODEL is unset. A running Ollama
+//	                   is also auto-detected when no other credentials exist.
+//	openai-compatible  Any other server speaking the Chat Completions wire
+//	                   format (vLLM, Groq, Mistral, LM Studio, ...).
 //	                   Config: ASF_LLM_BASE_URL (required), ASF_LLM_API_KEY
 //	                   (optional — local servers often need none).
 //
@@ -55,13 +60,20 @@ func FromEnv() Client {
 		return newOpenAICompatible("openai", "https://api.openai.com/v1", os.Getenv("OPENAI_API_KEY"))
 	case "openai-compatible":
 		return newOpenAICompatible("openai-compatible", os.Getenv("ASF_LLM_BASE_URL"), os.Getenv("ASF_LLM_API_KEY"))
+	case "ollama":
+		return newOllama()
 	case "":
-		// Auto-detect from available credentials.
+		// Auto-detect: explicit credentials first, then a locally running
+		// Ollama (free, so safe to auto-enable), then the ambient profile
+		// behind its opt-in.
 		if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" {
 			return newAnthropic()
 		}
 		if os.Getenv("OPENAI_API_KEY") != "" {
 			return newOpenAICompatible("openai", "https://api.openai.com/v1", os.Getenv("OPENAI_API_KEY"))
+		}
+		if c := detectOllama(); c != nil {
+			return c
 		}
 		if profileCredentialsExist() && os.Getenv("ASF_ENABLE_LLM") == "1" {
 			return newAnthropic()
@@ -94,6 +106,15 @@ func ConfigError() string {
 		}
 		if os.Getenv("ASF_MODEL") == "" {
 			return "ASF_LLM_PROVIDER=openai-compatible requires ASF_MODEL"
+		}
+		return ""
+	case "ollama":
+		base := ollamaBaseURL()
+		if !ollamaReachable(base) {
+			return "ollama is not reachable at " + base + " — start it with `ollama serve` (or set OLLAMA_HOST / ASF_LLM_BASE_URL)"
+		}
+		if os.Getenv("ASF_MODEL") == "" && firstOllamaChatModel(base) == "" {
+			return "ollama is running but has no chat-capable model — `ollama pull <model>` or set ASF_MODEL"
 		}
 		return ""
 	default:

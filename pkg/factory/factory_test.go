@@ -40,6 +40,7 @@ func newTestFactory(t *testing.T) (*FactoryOrchestrator, *scriptedAgent) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_CONFIG_DIR", t.TempDir())
+	t.Setenv("OLLAMA_HOST", "127.0.0.1:1") // keep a real local Ollama out of auto-detection
 
 	dir := t.TempDir()
 	specYAML := `id: "spec-001"
