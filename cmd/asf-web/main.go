@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -61,7 +63,7 @@ func newWebServer(workingDir string) (*webServer, error) {
 	}, nil
 }
 
-func (s *webServer) routes() *http.ServeMux {
+func (s *webServer) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static"))))
@@ -76,7 +78,70 @@ func (s *webServer) routes() *http.ServeMux {
 	mux.HandleFunc("/api/tasks/", s.handleTask)
 	mux.HandleFunc("/", s.handleRoot)
 
-	return mux
+	return apiGuard(mux)
+}
+
+// isLoopback reports whether a Host header or Origin host refers to this
+// machine (localhost / 127.0.0.1 / ::1).
+func isLoopback(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// apiGuard protects /api/ routes against cross-site abuse:
+//
+//   - the Host header must be loopback (defeats DNS rebinding)
+//   - the Origin header, when present, must be loopback (defeats CSRF from
+//     arbitrary websites; the Next dev server on localhost:3000 passes)
+//   - requests with bodies must declare Content-Type: application/json
+//   - bodies are capped at 1 MiB
+//   - if ASF_API_TOKEN is set, every API request must carry it as
+//     "Authorization: Bearer <token>" (opt-in hardening for non-local use)
+func apiGuard(next http.Handler) http.Handler {
+	token := os.Getenv("ASF_API_TOKEN")
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if token != "" {
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid token"})
+				return
+			}
+		} else if !isLoopback(r.Host) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "non-local requests require ASF_API_TOKEN"})
+			return
+		}
+
+		if origin := r.Header.Get("Origin"); origin != "" && token == "" {
+			u, err := url.Parse(origin)
+			if err != nil || !isLoopback(u.Host) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin request refused"})
+				return
+			}
+		}
+
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+			ct := r.Header.Get("Content-Type")
+			if !strings.HasPrefix(ct, "application/json") {
+				writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "Content-Type must be application/json"})
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

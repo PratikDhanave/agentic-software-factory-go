@@ -190,13 +190,19 @@ func (fo *FactoryOrchestrator) SubmitTask(task *Task) error {
 	}
 }
 
-// GetTaskResult retrieves the result of a task
+// GetTaskResult retrieves a snapshot of a task. It returns a copy taken
+// under the lock: workers mutate task state concurrently, so handing out
+// the live pointer would race with readers.
 func (fo *FactoryOrchestrator) GetTaskResult(taskID string) (*Task, bool) {
 	fo.mu.RLock()
 	defer fo.mu.RUnlock()
 
 	task, ok := fo.results[taskID]
-	return task, ok
+	if !ok {
+		return nil, false
+	}
+	snapshot := *task
+	return &snapshot, true
 }
 
 // taskFromRecord rebuilds an in-memory Task from its persisted record.
