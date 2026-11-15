@@ -12,12 +12,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factorydef"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
 )
@@ -37,6 +40,7 @@ type webServer struct {
 	factory    *factory.FactoryOrchestrator
 	factoryDef *factorydef.FactoryDefinition
 	harness    *harness.CompleteHarness
+	specs      *spec.SpecEngine
 }
 
 func newWebServer(workingDir string) (*webServer, error) {
@@ -60,6 +64,7 @@ func newWebServer(workingDir string) (*webServer, error) {
 		factory:    fo,
 		factoryDef: factoryDef,
 		harness:    harness.NewCompleteHarness(workingDir),
+		specs:      spec.NewSpecEngine(filepath.Join(workingDir, "specs")),
 	}, nil
 }
 
@@ -118,7 +123,11 @@ func apiGuard(next http.Handler) http.Handler {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid token"})
 				return
 			}
-		} else if !isLoopback(r.Host) {
+		} else if !isLoopback(r.RemoteAddr) || !isLoopback(r.Host) {
+			// RemoteAddr is the actual TCP peer and cannot be spoofed by
+			// headers; Host is additionally checked against DNS rebinding.
+			// Note a local reverse proxy that accepts remote traffic would
+			// still satisfy this — any such deployment must set ASF_API_TOKEN.
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "non-local requests require ASF_API_TOKEN"})
 			return
 		}
@@ -293,15 +302,30 @@ func (s *webServer) handleHarnessStatus(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ready"})
 }
 
+// handleListSpecs lists the specifications that can actually be launched —
+// the spec files on disk, not the factory-definition workflows.
 func (s *webServer) handleListSpecs(w http.ResponseWriter, r *http.Request) {
-	specs := make([]map[string]interface{}, 0)
-	if s.factoryDef != nil {
-		for _, workflow := range s.factoryDef.Factory.Workflows {
-			specs = append(specs, map[string]interface{}{
-				"id":    workflow.ID,
-				"steps": len(workflow.Steps),
-			})
+	all, err := s.specs.LoadAllSpecs()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	ids := make([]string, 0, len(all))
+	for id := range all {
+		if id != "" {
+			ids = append(ids, id)
 		}
+	}
+	sort.Strings(ids)
+
+	specs := make([]map[string]interface{}, 0, len(ids))
+	for _, id := range ids {
+		specs = append(specs, map[string]interface{}{
+			"id":      id,
+			"title":   all[id].Title,
+			"version": all[id].Version,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"specs": specs})
 }

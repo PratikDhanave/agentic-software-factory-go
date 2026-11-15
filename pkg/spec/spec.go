@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Specification represents a machine-readable specification for agent execution
@@ -230,9 +232,7 @@ func (e *SpecEngine) GeneratePrompt(spec *Specification) string {
 
 // unmarshalYAML uses gopkg.in/yaml.v3 for unmarshaling
 func unmarshalYAML(data []byte, v interface{}) error {
-	// Simple fallback - in production use gopkg.in/yaml.v3
-	// For now, we'll just try JSON
-	return json.Unmarshal(data, v)
+	return yaml.Unmarshal(data, v)
 }
 
 // SpecTemplate provides a template for creating new specifications

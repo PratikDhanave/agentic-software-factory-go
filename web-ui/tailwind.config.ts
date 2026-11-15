@@ -108,19 +108,20 @@ const config: Config = {
             900: '#212121',
           },
         },
-        // Surface colors for Material Design
-        surface: {
-          light: '#ffffff',
-          dark: '#1e1e1e',
-          container: {
-            light: '#f5f5f5',
-            dark: '#2d2d2d',
-          },
-        },
-        onSurface: {
-          light: '#1c1c1e',
-          dark: '#e6e1e5',
-        },
+        // Material Design tokens used by the component classes in
+        // globals.css (@apply bg-surface, border-outline-variant/50, ...).
+        // Values match the --color-* custom properties' light theme.
+        primary: '#3f51b5',
+        'on-primary': '#ffffff',
+        'primary-container': '#e8eaf6',
+        'on-primary-container': '#1a237e',
+        surface: '#ffffff',
+        'surface-container': '#f5f5f5',
+        'on-surface': '#1c1c1e',
+        'on-surface-variant': '#49454f',
+        outline: '#757575',
+        'outline-variant': '#cac4d0',
+        scrim: '#000000',
       },
       fontFamily: {
         sans: ['Google Sans', 'Inter', 'system-ui', 'sans-serif'],

@@ -1,6 +1,7 @@
 import Image from 'next/image'
 import { Inter } from 'next/font/google'
 import { LaunchPad } from '@/components/LaunchPad'
+import { FactoryStatus } from '@/components/FactoryStatus'
 import { statusBadge } from '@/lib/statusBadge'
 
 const inter = Inter({ subsets: ['latin'], weight: ['400', '500', '600'] })
@@ -39,32 +40,10 @@ export default function Home() {
         {/* Feature Launchpad */}
         <LaunchPad />
 
-        {/* Factory Status */}
+        {/* Factory Status (live from /api/factory/status) */}
         <section className="mt-8">
           <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-4">Factory Status</h2>
-          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
-            <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-              <div className="flex items-center gap-4">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Factory Status:</span>
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
-                  <span className="w-2 h-2 rounded-full bg-green-500 mr-2"></span>
-                  Running
-                </span>
-              </div>
-              <div className="flex items-center gap-6 text-sm text-gray-500 dark:text-gray-400">
-                <span>Workers: <span className="font-medium text-gray-900 dark:text-gray-100">3/4</span> active</span>
-                <span>Queue: <span className="font-medium text-gray-900 dark:text-gray-100">2</span> tasks</span>
-                <span>Completed: <span className="font-medium text-gray-900 dark:text-gray-100">47</span></span>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-              <WorkerCard number={1} status="busy" currentTask="Code Review - PR #234" />
-              <WorkerCard number={2} status="busy" currentTask="Feature Gen - spec-002" />
-              <WorkerCard number={3} status="busy" currentTask="Bug Fix - auth.go" />
-              <WorkerCard number={4} status="idle" currentTask="Waiting..." />
-              <QueueCard count={2} />
-            </div>
-          </div>
+          <FactoryStatus />
         </section>
 
         {/* Recent Activity */}
@@ -77,33 +56,6 @@ export default function Home() {
       </div>
     </main>
   )
-}
-
-function WorkerCard({ number, status, currentTask }: { number: number; status: 'busy' | 'idle'; currentTask: string }) {
-  return (
-    <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="font-medium text-gray-900 dark:text-gray-100">Worker {number}</span>
-        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-          status === 'busy' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-400'
-        }`}>
-          <span className={`w-1.5 h-1.5 rounded-full mr-1 ${number % 2 === 0 ? 'bg-green-500' : 'bg-green-400'}`}></span>
-          {status === 'busy' ? 'Busy' : 'Idle'}
-        </span>
-      </div>
-      <p className="text-sm text-gray-500 dark:text-gray-400 truncate">{currentTask}</p>
-    </div>
-  );
-}
-
-function QueueCard({ count }: { count: number }) {
-  return (
-    <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4 text-center">
-      <div className="text-3xl font-bold text-gray-900 dark:text-gray-100">{count}</div>
-      <p className="text-sm text-gray-500 dark:text-gray-400">Queued Tasks</p>
-      <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Next: spec-002 review</p>
-    </div>
-  );
 }
 
 function ActivityFeed() {
