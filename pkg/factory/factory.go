@@ -12,6 +12,7 @@ import (
 
 	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/llm"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/persistence"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
@@ -75,6 +76,8 @@ type FactoryOrchestrator struct {
 	specEngine    *spec.SpecEngine
 	verifier      *verify.VerificationEngine
 	persistence   *persistence.PersistenceManager
+	agent         harness.AgentClient // nil when no LLM credentials are configured
+	agentModel    string
 	mu            sync.RWMutex
 	workerCount   int
 	maxWorkers    int
@@ -104,6 +107,17 @@ func NewFactoryOrchestrator(workingDir string, maxWorkers int) (*FactoryOrchestr
 		persistence:   persist,
 		maxWorkers:    maxWorkers,
 		shutdown:      make(chan struct{}),
+	}
+
+	// Wire the LLM when credentials are available; otherwise the factory
+	// runs in prompt-only mode. Assign through a nil check so a typed nil
+	// *llm.Client never ends up inside the non-nil interface value.
+	if client := llm.FromEnv(); client != nil {
+		fo.agent = client
+		fo.agentModel = client.Model()
+		log.Printf("factory: LLM enabled (model %s)", fo.agentModel)
+	} else {
+		log.Printf("factory: no Anthropic credentials found — running in prompt-only mode")
 	}
 
 	// Initialize workers
@@ -412,39 +426,69 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 	})
 }
 
-// executeGenerate executes a code generation task
-func (fo *FactoryOrchestrator) executeGenerate(ctx context.Context, task *Task) error {
-	// Load spec
+// buildTaskPrompt assembles the full agent prompt for a task: the spec's
+// generated prompt plus the curated project context, with an optional
+// task-type instruction prepended.
+func (fo *FactoryOrchestrator) buildTaskPrompt(ctx context.Context, specID, instruction string) (string, int, error) {
 	specs, err := fo.specEngine.LoadAllSpecs()
 	if err != nil {
-		return err
+		return "", 0, err
 	}
-
-	s, ok := specs[task.SpecID]
+	s, ok := specs[specID]
 	if !ok {
-		return fmt.Errorf("spec not found: %s", task.SpecID)
+		return "", 0, fmt.Errorf("spec not found: %s", specID)
 	}
 
-	// Load context
 	contextItems, err := fo.contextEngine.LoadContext(ctx)
+	if err != nil {
+		return "", 0, err
+	}
+
+	prompt := fo.specEngine.GeneratePrompt(s)
+	contextStr := asfContext.FormatForAgent(contextItems)
+	full := fmt.Sprintf("%s%s\n\n## Project Context\n%s", instruction, prompt, contextStr)
+	return full, len(contextItems), nil
+}
+
+// runAgentTask builds the task prompt and, when an LLM is wired, executes it
+// against the model. Without credentials, the prompt itself is the result so
+// the factory remains usable end-to-end in prompt-only mode.
+func (fo *FactoryOrchestrator) runAgentTask(ctx context.Context, task *Task, instruction, outputKey string) error {
+	fullPrompt, contextCount, err := fo.buildTaskPrompt(ctx, task.SpecID, instruction)
 	if err != nil {
 		return err
 	}
 
-	// Generate prompt
-	prompt := fo.specEngine.GeneratePrompt(s)
-	contextStr := asfContext.FormatForAgent(contextItems)
-	fullPrompt := fmt.Sprintf("%s\n\n## Project Context\n%s", prompt, contextStr)
-
-	// In real implementation, call agent here
-	// For now, store the prompt as result
-	task.Result = map[string]interface{}{
-		"prompt":        fullPrompt,
-		"spec_id":       task.SpecID,
-		"context_items": len(contextItems),
+	if fo.agent == nil {
+		task.Result = map[string]interface{}{
+			"prompt":        fullPrompt,
+			"spec_id":       task.SpecID,
+			"context_items": contextCount,
+			"note":          "no LLM credentials configured; returning prompt only (set ANTHROPIC_API_KEY or run `ant auth login`)",
+		}
+		return nil
 	}
 
+	callCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	output, err := fo.agent.Generate(callCtx, fullPrompt)
+	if err != nil {
+		return fmt.Errorf("llm %s task: %w", task.Type, err)
+	}
+
+	task.Result = map[string]interface{}{
+		outputKey:       output,
+		"spec_id":       task.SpecID,
+		"context_items": contextCount,
+		"model":         fo.agentModel,
+	}
 	return nil
+}
+
+// executeGenerate executes a code generation task
+func (fo *FactoryOrchestrator) executeGenerate(ctx context.Context, task *Task) error {
+	return fo.runAgentTask(ctx, task, "", "output")
 }
 
 // executeVerify executes a verification task
@@ -464,22 +508,18 @@ func (fo *FactoryOrchestrator) executeVerify(ctx context.Context, task *Task) er
 
 // executeReview executes a code review task
 func (fo *FactoryOrchestrator) executeReview(ctx context.Context, task *Task) error {
-	// Placeholder for code review logic
-	task.Result = map[string]interface{}{
-		"reviewed": true,
-		"comments": []string{"Code looks good", "Consider adding more tests"},
-	}
-	return nil
+	instruction := "## Task: Code Review\nReview the project context below against the specification. " +
+		"Report every issue you find, including ones you are uncertain about or consider low-severity — " +
+		"a downstream step filters by importance. For each finding include file, severity, and a concrete fix.\n\n"
+	return fo.runAgentTask(ctx, task, instruction, "review")
 }
 
 // executeRefactor executes a refactoring task
 func (fo *FactoryOrchestrator) executeRefactor(ctx context.Context, task *Task) error {
-	// Placeholder for refactoring logic
-	task.Result = map[string]interface{}{
-		"refactored": true,
-		"changes":    []string{"Extracted interface", "Improved error handling"},
-	}
-	return nil
+	instruction := "## Task: Refactoring Plan\nAnalyze the project context below against the specification and " +
+		"produce a prioritized refactoring plan: duplication to collapse, abstractions to simplify, and naming or " +
+		"structural cleanups — with concrete before/after sketches for the top items.\n\n"
+	return fo.runAgentTask(ctx, task, instruction, "refactor_plan")
 }
 
 // dispatchLoop manages task dispatching
@@ -581,6 +621,8 @@ func (fo *FactoryOrchestrator) GetFactoryStatus() map[string]interface{} {
 		"workers_busy":    busy,
 		"workers_idle":    idle,
 		"workers":         workers,
+		"llm_enabled":     fo.agent != nil,
+		"llm_model":       fo.agentModel,
 		"tasks_pending":   pending,
 		"tasks_completed": completed,
 		"tasks_failed":    failed,

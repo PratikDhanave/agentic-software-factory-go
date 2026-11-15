@@ -471,7 +471,7 @@ Conventions:
 
 Honest notes on what is scaffolding versus production-ready:
 
-- **No LLM client is wired in yet.** `harness.AgentClient` and `eval.LLMClient` are interfaces awaiting a real implementation (e.g. the Anthropic API). `generate` tasks currently produce the full agent prompt (spec + context) as their result instead of generated code; `review`/`refactor` tasks return canned results.
+- **The LLM is wired but optional.** `pkg/llm` implements `harness.AgentClient` and `eval.LLMClient` against the Anthropic Messages API (default model `claude-opus-4-8`, override with `ASF_MODEL`; adaptive thinking; cached system prompt). With `ANTHROPIC_API_KEY` set (or an `ant auth login` profile), `generate`/`review`/`refactor` tasks run against the real model; without credentials the factory runs in **prompt-only mode** — tasks complete with the assembled prompt as their result and a note explaining how to enable the LLM.
 - **Constraint verification** (`verifyConstraints`) is a stub.
 - **Integration adapters** (Slack/Teams/GitHub/Linear) compile and model webhooks/connection state, but are not wired to live credentials.
 - **OpenTelemetry** (`opentelemetry.go`) configures a tracer provider without an exporter — spans are sampled but dropped until OTLP wiring is added.
