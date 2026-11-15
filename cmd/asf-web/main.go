@@ -80,6 +80,7 @@ func (s *webServer) routes() http.Handler {
 	mux.HandleFunc("/api/specs", s.handleListSpecs)
 	mux.HandleFunc("/api/agents", s.handleListAgents)
 	mux.HandleFunc("/api/state-machines", s.handleStateMachines)
+	mux.HandleFunc("/api/tasks", s.handleTask)
 	mux.HandleFunc("/api/tasks/", s.handleTask)
 	mux.HandleFunc("/", s.handleRoot)
 
@@ -218,12 +219,18 @@ func (s *webServer) handleFactoryLaunch(w http.ResponseWriter, r *http.Request) 
 // handleTask serves GET /api/tasks/{id} (snapshot) and
 // GET /api/tasks/{id}/stream (Server-Sent Events until a terminal state).
 func (s *webServer) handleTask(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
+	rest := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/tasks"), "/")
 	taskID := strings.TrimSuffix(rest, "/stream")
 	streaming := strings.HasSuffix(rest, "/stream")
 
+	// GET /api/tasks with no id lists recent tasks, newest first.
 	if taskID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "task id required"})
+		tasks := s.factory.RecentTasks(20)
+		views := make([]map[string]interface{}, 0, len(tasks))
+		for _, t := range tasks {
+			views = append(views, taskView(t))
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"tasks": views})
 		return
 	}
 
@@ -276,14 +283,16 @@ func (s *webServer) handleTask(w http.ResponseWriter, r *http.Request) {
 // taskView is the JSON shape served for a task.
 func taskView(task *factory.Task) map[string]interface{} {
 	return map[string]interface{}{
-		"id":       task.ID,
-		"type":     task.Type,
-		"spec_id":  task.SpecID,
-		"status":   task.Status,
-		"terminal": factory.TaskMachine.IsTerminal(task.Status),
-		"retries":  task.Retries,
-		"result":   task.Result,
-		"error":    task.Error,
+		"id":           task.ID,
+		"type":         task.Type,
+		"spec_id":      task.SpecID,
+		"status":       task.Status,
+		"terminal":     factory.TaskMachine.IsTerminal(task.Status),
+		"retries":      task.Retries,
+		"result":       task.Result,
+		"error":        task.Error,
+		"created_at":   task.CreatedAt,
+		"completed_at": task.CompletedAt,
 	}
 }
 

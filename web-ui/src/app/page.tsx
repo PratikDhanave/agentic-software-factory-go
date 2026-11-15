@@ -2,7 +2,7 @@ import Image from 'next/image'
 import { Inter } from 'next/font/google'
 import { LaunchPad } from '@/components/LaunchPad'
 import { FactoryStatus } from '@/components/FactoryStatus'
-import { statusBadge } from '@/lib/statusBadge'
+import { ActivityFeed } from '@/components/ActivityFeed'
 
 const inter = Inter({ subsets: ['latin'], weight: ['400', '500', '600'] })
 
@@ -46,7 +46,7 @@ export default function Home() {
           <FactoryStatus />
         </section>
 
-        {/* Recent Activity */}
+        {/* Recent Activity (live from /api/tasks/) */}
         <section className="mt-8">
           <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-4">Recent Activity</h2>
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
@@ -56,33 +56,4 @@ export default function Home() {
       </div>
     </main>
   )
-}
-
-function ActivityFeed() {
-  const activities = [
-    { time: '10:23', status: 'success', message: 'Code Review completed on PR #234', link: '#' },
-    { time: '10:15', status: 'running', message: 'Feature "Auth API" generated → PR #235', link: '#' },
-    { time: '09:42', status: 'success', message: 'Bug fix auto-merged for null pointer in auth.go', link: '#' },
-    { time: '09:15', status: 'success', message: 'Prompt optimization completed (+12% success rate)', link: '#' },
-  ];
-
-  return (
-    <div className="space-y-3">
-      {activities.map((item, i) => (
-        <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-          <div className="text-sm font-mono text-gray-500 w-10">{item.time}</div>
-          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${statusBadge[item.status] ?? statusBadge.idle}`}>
-            {item.status}
-          </span>
-          <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">
-            {item.link ? (
-              <a href={item.link} className="hover:underline">{item.message}</a>
-            ) : (
-              item.message
-            )}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
 }

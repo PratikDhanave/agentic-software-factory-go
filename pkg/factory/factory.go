@@ -231,6 +231,24 @@ func (fo *FactoryOrchestrator) GetTaskResult(taskID string) (*Task, bool) {
 	return &snapshot, true
 }
 
+// RecentTasks returns snapshots of the most recently created tasks,
+// newest first.
+func (fo *FactoryOrchestrator) RecentTasks(limit int) []*Task {
+	fo.mu.RLock()
+	defer fo.mu.RUnlock()
+
+	tasks := make([]*Task, 0, len(fo.results))
+	for _, t := range fo.results {
+		snapshot := *t
+		tasks = append(tasks, &snapshot)
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
+	if limit > 0 && len(tasks) > limit {
+		tasks = tasks[:limit]
+	}
+	return tasks
+}
+
 // taskFromRecord rebuilds an in-memory Task from its persisted record.
 func taskFromRecord(t *persistence.TaskRecord) *Task {
 	return &Task{
