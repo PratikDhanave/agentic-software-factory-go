@@ -11,6 +11,8 @@ A production-grade implementation of Agentic Software Engineering patterns in Go
 
 ---
 
+> 📚 **Deeper, diagram-first documentation lives in [`docs/`](docs/README.md)** — [Architecture (visual walkthrough)](docs/ARCHITECTURE.md) · [Getting Started](docs/GETTING_STARTED.md) · [Configuration](docs/CONFIGURATION.md) · [API](docs/API.md) · [Security](docs/SECURITY.md) · [Development](docs/DEVELOPMENT.md) · [State Machines](docs/STATE_MACHINES.md)
+
 ## Table of Contents
 
 1. [Architecture](#architecture)
