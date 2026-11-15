@@ -9,14 +9,15 @@ import (
 
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factorydef"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/webguard"
 )
 
 // MCPServer exposes the factory as an MCP server
 type MCPServer struct {
-	factory   *factory.FactoryOrchestrator
+	factory    *factory.FactoryOrchestrator
 	factoryDef *factorydef.FactoryDefinition
-	mu        sync.RWMutex
-	server    *http.Server
+	mu         sync.RWMutex
+	server     *http.Server
 }
 
 // MCPRequest represents an incoming MCP request
@@ -50,14 +51,15 @@ func NewMCPServer(factory *factory.FactoryOrchestrator, factoryDef *factorydef.F
 	}
 }
 
-// Start starts the MCP server
+// Start serves MCP over HTTP. The endpoint can submit credential-spending
+// tasks, so it carries the same cross-site/remote guard as the web API.
 func (s *MCPServer) Start(addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", s.handleMCP)
 
 	s.server = &http.Server{
 		Addr:    addr,
-		Handler: mux,
+		Handler: webguard.Guard(mux, "/mcp"),
 	}
 
 	return s.server.ListenAndServe()
@@ -115,7 +117,7 @@ func (s *MCPServer) handleInitialize(params map[string]interface{}) (interface{}
 	return map[string]interface{}{
 		"protocolVersion": "2024-11-05",
 		"capabilities": map[string]interface{}{
-			"tools": map[string]interface{}{},
+			"tools":     map[string]interface{}{},
 			"resources": map[string]interface{}{},
 		},
 		"serverInfo": map[string]interface{}{
@@ -318,7 +320,7 @@ func (s *MCPServer) listSpecs() (interface{}, error) {
 	specs := make([]map[string]interface{}, 0)
 	for _, w := range s.factoryDef.Factory.Workflows {
 		specs = append(specs, map[string]interface{}{
-			"id":   w.ID,
+			"id":    w.ID,
 			"steps": len(w.Steps),
 		})
 	}

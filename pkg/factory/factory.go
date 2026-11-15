@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -48,6 +50,17 @@ type Task struct {
 	Parameters  map[string]interface{}
 }
 
+// llmMaxConcurrent returns the cap on concurrent paid LLM calls
+// (ASF_LLM_MAX_CONCURRENT, default 2).
+func llmMaxConcurrent() int {
+	if v := os.Getenv("ASF_LLM_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 2
+}
+
 // setTaskState applies a task state transition, logging any violation of
 // TaskMachine. Violations are logged rather than rejected so an undeclared
 // transition surfaces loudly in development without halting the factory.
@@ -78,6 +91,7 @@ type FactoryOrchestrator struct {
 	persistence   *persistence.PersistenceManager
 	agent         harness.AgentClient // nil when no LLM credentials are configured
 	agentModel    string
+	llmSlots      chan struct{} // caps concurrent paid LLM calls
 	mu            sync.RWMutex
 	workerCount   int
 	maxWorkers    int
@@ -109,13 +123,16 @@ func NewFactoryOrchestrator(workingDir string, maxWorkers int) (*FactoryOrchestr
 		shutdown:      make(chan struct{}),
 	}
 
-	// Wire the LLM when credentials are available; otherwise the factory
-	// runs in prompt-only mode. Assign through a nil check so a typed nil
-	// *llm.Client never ends up inside the non-nil interface value.
+	// Wire the LLM when credentials are available and authorized; otherwise
+	// the factory runs in prompt-only mode. Assign through a nil check so a
+	// typed nil *llm.Client never ends up inside the non-nil interface value.
 	if client := llm.FromEnv(); client != nil {
 		fo.agent = client
 		fo.agentModel = client.Model()
-		log.Printf("factory: LLM enabled (model %s)", fo.agentModel)
+		fo.llmSlots = make(chan struct{}, llmMaxConcurrent())
+		log.Printf("factory: LLM enabled (model %s, max %d concurrent calls)", fo.agentModel, cap(fo.llmSlots))
+	} else if llm.ProfileRequiresOptIn() {
+		log.Printf("factory: found an `ant auth login` profile but ASF_ENABLE_LLM is not set — running in prompt-only mode (set ASF_ENABLE_LLM=1 to spend those credentials)")
 	} else {
 		log.Printf("factory: no Anthropic credentials found — running in prompt-only mode")
 	}
@@ -467,6 +484,14 @@ func (fo *FactoryOrchestrator) runAgentTask(ctx context.Context, task *Task, ins
 			"note":          "no LLM credentials configured; returning prompt only (set ANTHROPIC_API_KEY or run `ant auth login`)",
 		}
 		return nil
+	}
+
+	// Bound concurrent paid calls independently of the worker pool size.
+	select {
+	case fo.llmSlots <- struct{}{}:
+		defer func() { <-fo.llmSlots }()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)

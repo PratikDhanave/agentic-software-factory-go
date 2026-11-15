@@ -8,9 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +21,7 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/webguard"
 )
 
 // launchTaskTypes maps a dashboard launch action to the factory task type
@@ -84,74 +83,7 @@ func (s *webServer) routes() http.Handler {
 	mux.HandleFunc("/api/tasks/", s.handleTask)
 	mux.HandleFunc("/", s.handleRoot)
 
-	return apiGuard(mux)
-}
-
-// isLoopback reports whether a Host header or Origin host refers to this
-// machine (localhost / 127.0.0.1 / ::1).
-func isLoopback(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	return ip != nil && ip.IsLoopback()
-}
-
-// apiGuard protects /api/ routes against cross-site abuse:
-//
-//   - the Host header must be loopback (defeats DNS rebinding)
-//   - the Origin header, when present, must be loopback (defeats CSRF from
-//     arbitrary websites; the Next dev server on localhost:3000 passes)
-//   - requests with bodies must declare Content-Type: application/json
-//   - bodies are capped at 1 MiB
-//   - if ASF_API_TOKEN is set, every API request must carry it as
-//     "Authorization: Bearer <token>" (opt-in hardening for non-local use)
-func apiGuard(next http.Handler) http.Handler {
-	token := os.Getenv("ASF_API_TOKEN")
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		if token != "" {
-			if r.Header.Get("Authorization") != "Bearer "+token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid token"})
-				return
-			}
-		} else if !isLoopback(r.RemoteAddr) || !isLoopback(r.Host) {
-			// RemoteAddr is the actual TCP peer and cannot be spoofed by
-			// headers; Host is additionally checked against DNS rebinding.
-			// Note a local reverse proxy that accepts remote traffic would
-			// still satisfy this — any such deployment must set ASF_API_TOKEN.
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "non-local requests require ASF_API_TOKEN"})
-			return
-		}
-
-		if origin := r.Header.Get("Origin"); origin != "" && token == "" {
-			u, err := url.Parse(origin)
-			if err != nil || !isLoopback(u.Host) {
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin request refused"})
-				return
-			}
-		}
-
-		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
-			ct := r.Header.Get("Content-Type")
-			if !strings.HasPrefix(ct, "application/json") {
-				writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "Content-Type must be application/json"})
-				return
-			}
-			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		}
-
-		next.ServeHTTP(w, r)
-	})
+	return webguard.Guard(mux, "/api/")
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

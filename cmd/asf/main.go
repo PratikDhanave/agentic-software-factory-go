@@ -575,6 +575,10 @@ func runFactory(workingDir string, args []string) {
 }
 
 func runMCPServer(workingDir string, args []string) {
+	// Accept both `asf mcp start [addr]` and `asf mcp [addr]`.
+	if len(args) > 0 && args[0] == "start" {
+		args = args[1:]
+	}
 	addr := "localhost:8080"
 	if len(args) > 0 && args[0] != "" {
 		addr = args[0]

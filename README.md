@@ -401,7 +401,7 @@ factory:
 
 ## Security Model
 
-The API server refuses cross-site and remote abuse by default (see `apiGuard` in `cmd/asf-web/main.go`):
+Both HTTP surfaces — the web API (`/api/*`) and the MCP server (`/mcp`) — share one guard (`pkg/webguard`), since both can submit credential-spending LLM tasks:
 
 | Check | Defends against |
 |---|---|
@@ -413,6 +413,8 @@ The API server refuses cross-site and remote abuse by default (see `apiGuard` in
 | `ASF_API_TOKEN` env var (optional) | when set, every request must send `Authorization: Bearer <token>` — required for any non-local deployment (e.g. behind a reverse proxy) |
 
 Task snapshots: `GetTaskResult`/`RecentTasks` return copies taken under the orchestrator lock, so API handlers never race with worker mutations.
+
+LLM credential policy: an exported `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` enables the LLM directly (an explicit act for this process), but an ambient `ant auth login` profile additionally requires `ASF_ENABLE_LLM=1` — the factory never silently spends credentials created for other tools. Concurrent paid calls are capped (`ASF_LLM_MAX_CONCURRENT`, default 2) independently of the worker pool.
 
 ---
 

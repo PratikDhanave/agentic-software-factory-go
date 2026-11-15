@@ -50,24 +50,40 @@ func New() *Client {
 	}
 }
 
-// FromEnv returns a ready client when credentials appear to be available,
-// or nil when the factory should run in prompt-only mode. Detection mirrors
-// the SDK's resolution order: env vars first, then an `ant auth login`
-// profile on disk.
+// FromEnv returns a ready client when credentials are available and their
+// use is authorized, or nil when the factory should run in prompt-only mode.
+//
+// An env var (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN) is an explicit act
+// for this process and enables the LLM directly. An `ant auth login` profile
+// on disk is ambient — it was created for other tools, so spending it here
+// additionally requires the explicit opt-in ASF_ENABLE_LLM=1.
 func FromEnv() *Client {
-	if !CredentialsAvailable() {
+	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" {
+		return New()
+	}
+	if profileCredentialsExist() {
+		if os.Getenv("ASF_ENABLE_LLM") == "1" {
+			return New()
+		}
+		// Ambient profile present but not opted in — stay in prompt-only
+		// mode. The factory logs how to enable it.
 		return nil
 	}
-	return New()
+	return nil
 }
 
-// CredentialsAvailable reports whether some Anthropic credential source is
-// present. A profile directory existing is a heuristic — the definitive
-// check is the first API call.
-func CredentialsAvailable() bool {
-	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" {
-		return true
-	}
+// ProfileRequiresOptIn reports whether an ambient profile credential exists
+// that would be used if ASF_ENABLE_LLM=1 were set.
+func ProfileRequiresOptIn() bool {
+	return os.Getenv("ANTHROPIC_API_KEY") == "" &&
+		os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" &&
+		os.Getenv("ASF_ENABLE_LLM") != "1" &&
+		profileCredentialsExist()
+}
+
+// profileCredentialsExist reports whether an `ant auth login` profile is on
+// disk. A heuristic — the definitive check is the first API call.
+func profileCredentialsExist() bool {
 	configDir := os.Getenv("ANTHROPIC_CONFIG_DIR")
 	if configDir == "" {
 		home, err := os.UserHomeDir()
