@@ -288,7 +288,7 @@ All routes are JSON over HTTP, guarded by [`apiGuard`](#security-model). Base UR
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/factory/status` | Counters + per-worker snapshots (`workers[]` with id, status, current task) |
-| `POST` | `/api/factory/launch/{action}` | Submit a task. Actions: `review`, `bugfix`, `feature`, `eval`, `refactor`, `migrate` (mapped to task types in `launchTaskTypes`). Body: `{"spec_id": "...", "priority": 1, "parameters": {}}`. Returns `202 {task_id, status}` |
+| `POST` | `/api/factory/launch/{action}` | Submit a task. Actions: `review`, `bugfix`, `feature`, `eval` (→ `evaluate`, judges the latest generate output), `refactor`, `migrate` (mapped to task types in `launchTaskTypes`). Body: `{"spec_id": "...", "priority": 1, "parameters": {}}`. Returns `202 {task_id, status}` |
 | `GET` | `/api/tasks` | Recent tasks, newest first (snapshot views, max 20) |
 | `GET` | `/api/tasks/{id}` | One task snapshot: status, `terminal` flag, retries, result, error, timestamps |
 | `GET` | `/api/tasks/{id}/stream` | **Server-Sent Events**: emits a JSON event on every state change, closes when the task reaches a terminal state |
@@ -473,7 +473,8 @@ Conventions:
 
 Honest notes on what is scaffolding versus production-ready:
 
-- **The LLM is wired but optional.** `pkg/llm` implements `harness.AgentClient` and `eval.LLMClient` against the Anthropic Messages API (default model `claude-opus-4-8`, override with `ASF_MODEL`; adaptive thinking; cached system prompt). With `ANTHROPIC_API_KEY` set (or an `ant auth login` profile), `generate`/`review`/`refactor` tasks run against the real model; without credentials the factory runs in **prompt-only mode** — tasks complete with the assembled prompt as their result and a note explaining how to enable the LLM.
+- **The LLM is wired, provider-agnostic, and optional.** `pkg/llm` exposes a `Client` interface (satisfying `harness.AgentClient` and `eval.LLMClient`) with pluggable providers selected via `ASF_LLM_PROVIDER`: `anthropic` (official SDK; default model `claude-opus-4-8`), `openai`, or `openai-compatible` (any Chat-Completions server — Ollama, vLLM, Groq, Mistral, LM Studio — via `ASF_LLM_BASE_URL`; `ASF_LLM_API_KEY` optional). `ASF_MODEL` selects the model for any provider. Auto-detection picks a provider from available credentials; without any, the factory runs in **prompt-only mode** — tasks complete with the assembled prompt as their result.
+- **The evaluation engine is wired as the improvement loop.** Every LLM-backed `generate` task is judged by LLM-as-a-judge (`pkg/eval`, weighted criteria, 0.75 threshold); below-threshold output is regenerated with the judge's feedback (`ASF_EVAL_MAX_ATTEMPTS`, default 2), and the final verdict (score, per-criterion breakdown, feedback, improvements) is attached to the task result. A dedicated `evaluate` task type (the dashboard's "Run Benchmark" card) judges the latest completed generate output for a spec on demand.
 - **Constraint verification** (`verifyConstraints`) is a stub.
 - **Integration adapters** (Slack/Teams/GitHub/Linear) compile and model webhooks/connection state, but are not wired to live credentials.
 - **OpenTelemetry** (`opentelemetry.go`) configures a tracer provider without an exporter — spans are sampled but dropped until OTLP wiring is added.

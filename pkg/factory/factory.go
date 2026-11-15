@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/eval"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/llm"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/persistence"
@@ -36,7 +38,7 @@ type Worker struct {
 // Task represents a unit of work in the factory
 type Task struct {
 	ID          string
-	Type        string // "generate", "verify", "review", "refactor"
+	Type        string // "generate", "verify", "review", "refactor", "evaluate"
 	SpecID      string
 	Priority    int
 	Status      state.State // see TaskMachine
@@ -89,9 +91,12 @@ type FactoryOrchestrator struct {
 	specEngine    *spec.SpecEngine
 	verifier      *verify.VerificationEngine
 	persistence   *persistence.PersistenceManager
-	agent         harness.AgentClient // nil when no LLM credentials are configured
+	agent         harness.AgentClient // nil when no LLM provider is configured
 	agentModel    string
-	llmSlots      chan struct{} // caps concurrent paid LLM calls
+	agentProvider string
+	llmSlots      chan struct{}          // caps concurrent paid LLM calls
+	evaluator     *eval.EvaluationEngine // LLM-as-a-judge; nil without credentials
+	evalCriteria  eval.EvaluationCriteria
 	mu            sync.RWMutex
 	workerCount   int
 	maxWorkers    int
@@ -123,18 +128,22 @@ func NewFactoryOrchestrator(workingDir string, maxWorkers int) (*FactoryOrchestr
 		shutdown:      make(chan struct{}),
 	}
 
-	// Wire the LLM when credentials are available and authorized; otherwise
-	// the factory runs in prompt-only mode. Assign through a nil check so a
-	// typed nil *llm.Client never ends up inside the non-nil interface value.
+	// Wire the LLM when a provider is configured and authorized; otherwise
+	// the factory runs in prompt-only mode. The provider layer is agnostic —
+	// see pkg/llm for the ASF_LLM_PROVIDER options.
 	if client := llm.FromEnv(); client != nil {
 		fo.agent = client
 		fo.agentModel = client.Model()
+		fo.agentProvider = client.Provider()
 		fo.llmSlots = make(chan struct{}, llmMaxConcurrent())
-		log.Printf("factory: LLM enabled (model %s, max %d concurrent calls)", fo.agentModel, cap(fo.llmSlots))
-	} else if llm.ProfileRequiresOptIn() {
-		log.Printf("factory: found an `ant auth login` profile but ASF_ENABLE_LLM is not set — running in prompt-only mode (set ASF_ENABLE_LLM=1 to spend those credentials)")
+		fo.evaluator = eval.NewEvaluationEngine(client)
+		fo.evalCriteria = eval.DefaultEvaluationCriteria()
+		log.Printf("factory: LLM enabled (provider %s, model %s, max %d concurrent calls, judge threshold %.2f)",
+			fo.agentProvider, fo.agentModel, cap(fo.llmSlots), fo.evalCriteria.Threshold)
+	} else if msg := llm.ConfigError(); msg != "" {
+		log.Printf("factory: running in prompt-only mode — %s", msg)
 	} else {
-		log.Printf("factory: no Anthropic credentials found — running in prompt-only mode")
+		log.Printf("factory: no LLM provider configured — running in prompt-only mode")
 	}
 
 	// Initialize workers
@@ -280,9 +289,16 @@ func (fo *FactoryOrchestrator) RecentTasks(limit int) []*Task {
 	return tasks
 }
 
-// taskFromRecord rebuilds an in-memory Task from its persisted record.
+// taskFromRecord rebuilds an in-memory Task from its persisted record,
+// including the serialized result (needed e.g. so evaluate tasks can find
+// generate outputs produced before a restart).
 func taskFromRecord(t *persistence.TaskRecord) *Task {
+	var result interface{}
+	if len(t.Result) > 0 {
+		_ = json.Unmarshal(t.Result, &result)
+	}
 	return &Task{
+		Result:      result,
 		ID:          t.ID,
 		Type:        t.Type,
 		SpecID:      t.SpecID,
@@ -382,6 +398,8 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 		err = fo.executeReview(ctx, task)
 	case "refactor":
 		err = fo.executeRefactor(ctx, task)
+	case "evaluate":
+		err = fo.executeEvaluate(ctx, task)
 	default:
 		err = fmt.Errorf("unknown task type: %s", task.Type)
 	}
@@ -443,50 +461,29 @@ func (fo *FactoryOrchestrator) executeTask(ctx context.Context, worker *Worker, 
 	})
 }
 
-// buildTaskPrompt assembles the full agent prompt for a task: the spec's
-// generated prompt plus the curated project context, with an optional
-// task-type instruction prepended.
-func (fo *FactoryOrchestrator) buildTaskPrompt(ctx context.Context, specID, instruction string) (string, int, error) {
+// buildTaskParts loads the spec prompt and project context for a task,
+// returned separately so the judge can receive them as distinct sections.
+func (fo *FactoryOrchestrator) buildTaskParts(ctx context.Context, specID string) (specPrompt, contextStr string, contextCount int, err error) {
 	specs, err := fo.specEngine.LoadAllSpecs()
 	if err != nil {
-		return "", 0, err
+		return "", "", 0, err
 	}
 	s, ok := specs[specID]
 	if !ok {
-		return "", 0, fmt.Errorf("spec not found: %s", specID)
+		return "", "", 0, fmt.Errorf("spec not found: %s", specID)
 	}
 
 	contextItems, err := fo.contextEngine.LoadContext(ctx)
 	if err != nil {
-		return "", 0, err
+		return "", "", 0, err
 	}
 
-	prompt := fo.specEngine.GeneratePrompt(s)
-	contextStr := asfContext.FormatForAgent(contextItems)
-	full := fmt.Sprintf("%s%s\n\n## Project Context\n%s", instruction, prompt, contextStr)
-	return full, len(contextItems), nil
+	return fo.specEngine.GeneratePrompt(s), asfContext.FormatForAgent(contextItems), len(contextItems), nil
 }
 
-// runAgentTask builds the task prompt and, when an LLM is wired, executes it
-// against the model. Without credentials, the prompt itself is the result so
-// the factory remains usable end-to-end in prompt-only mode.
-func (fo *FactoryOrchestrator) runAgentTask(ctx context.Context, task *Task, instruction, outputKey string) error {
-	fullPrompt, contextCount, err := fo.buildTaskPrompt(ctx, task.SpecID, instruction)
-	if err != nil {
-		return err
-	}
-
-	if fo.agent == nil {
-		task.Result = map[string]interface{}{
-			"prompt":        fullPrompt,
-			"spec_id":       task.SpecID,
-			"context_items": contextCount,
-			"note":          "no LLM credentials configured; returning prompt only (set ANTHROPIC_API_KEY or run `ant auth login`)",
-		}
-		return nil
-	}
-
-	// Bound concurrent paid calls independently of the worker pool size.
+// withLLMSlot runs one paid LLM call under the concurrency cap and a
+// per-call timeout.
+func (fo *FactoryOrchestrator) withLLMSlot(ctx context.Context, fn func(context.Context) error) error {
 	select {
 	case fo.llmSlots <- struct{}{}:
 		defer func() { <-fo.llmSlots }()
@@ -496,8 +493,61 @@ func (fo *FactoryOrchestrator) runAgentTask(ctx context.Context, task *Task, ins
 
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
+	return fn(callCtx)
+}
 
-	output, err := fo.agent.Generate(callCtx, fullPrompt)
+// promptOnlyResult records the assembled prompt as the task result when no
+// LLM is configured, keeping the factory usable end-to-end without a key.
+func promptOnlyResult(task *Task, fullPrompt string, contextCount int) {
+	task.Result = map[string]interface{}{
+		"prompt":        fullPrompt,
+		"spec_id":       task.SpecID,
+		"context_items": contextCount,
+		"note":          "no LLM provider configured; returning prompt only (see pkg/llm: ASF_LLM_PROVIDER + credentials)",
+	}
+}
+
+// evalMaxAttempts returns how many generate attempts the judge loop may use
+// (ASF_EVAL_MAX_ATTEMPTS, default 2: one generation plus one revision).
+func evalMaxAttempts() int {
+	if v := os.Getenv("ASF_EVAL_MAX_ATTEMPTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 2
+}
+
+// evaluationView is the serializable shape of a judge verdict.
+func evaluationView(ev *eval.EvaluationResult) map[string]interface{} {
+	return map[string]interface{}{
+		"score":        ev.Score,
+		"passed":       ev.Passed,
+		"criteria":     ev.Criteria,
+		"feedback":     ev.Feedback,
+		"improvements": ev.Improvements,
+	}
+}
+
+// runAgentTask builds the task prompt and, when an LLM is wired, executes it
+// against the model (no judge loop — used by review/refactor).
+func (fo *FactoryOrchestrator) runAgentTask(ctx context.Context, task *Task, instruction, outputKey string) error {
+	specPrompt, contextStr, contextCount, err := fo.buildTaskParts(ctx, task.SpecID)
+	if err != nil {
+		return err
+	}
+	fullPrompt := fmt.Sprintf("%s%s\n\n## Project Context\n%s", instruction, specPrompt, contextStr)
+
+	if fo.agent == nil {
+		promptOnlyResult(task, fullPrompt, contextCount)
+		return nil
+	}
+
+	var output string
+	err = fo.withLLMSlot(ctx, func(callCtx context.Context) error {
+		output, err = fo.agent.Generate(callCtx, fullPrompt)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("llm %s task: %w", task.Type, err)
 	}
@@ -511,9 +561,146 @@ func (fo *FactoryOrchestrator) runAgentTask(ctx context.Context, task *Task, ins
 	return nil
 }
 
-// executeGenerate executes a code generation task
+// executeGenerate executes a code generation task through the improvement
+// loop: generate, judge against the spec (LLM-as-a-judge), and when the
+// verdict is below threshold, regenerate with the judge's feedback — up to
+// evalMaxAttempts attempts. A judge failure never fails the task; the
+// generated output stands with a note.
 func (fo *FactoryOrchestrator) executeGenerate(ctx context.Context, task *Task) error {
-	return fo.runAgentTask(ctx, task, "", "output")
+	specPrompt, contextStr, contextCount, err := fo.buildTaskParts(ctx, task.SpecID)
+	if err != nil {
+		return err
+	}
+	fullPrompt := fmt.Sprintf("%s\n\n## Project Context\n%s", specPrompt, contextStr)
+
+	if fo.agent == nil {
+		promptOnlyResult(task, fullPrompt, contextCount)
+		return nil
+	}
+
+	maxAttempts := evalMaxAttempts()
+	prompt := fullPrompt
+	var output string
+	var verdict *eval.EvaluationResult
+	var judgeNote string
+	attempts := 0
+
+	for {
+		attempts++
+
+		err = fo.withLLMSlot(ctx, func(callCtx context.Context) error {
+			output, err = fo.agent.Generate(callCtx, prompt)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("llm generate task: %w", err)
+		}
+
+		if fo.evaluator == nil {
+			break
+		}
+
+		var evalErr error
+		evalErr = fo.withLLMSlot(ctx, func(callCtx context.Context) error {
+			verdict, evalErr = fo.evaluator.EvaluateCode(callCtx, specPrompt, output, contextStr, fo.evalCriteria)
+			return evalErr
+		})
+		if evalErr != nil {
+			// The artifact was produced; a broken judge should not discard it.
+			judgeNote = fmt.Sprintf("evaluation skipped: %v", evalErr)
+			log.Printf("factory: task %s: %s", task.ID, judgeNote)
+			break
+		}
+
+		if verdict.Passed || attempts >= maxAttempts {
+			break
+		}
+
+		prompt = fmt.Sprintf(
+			"%s\n\n## Previous Attempt (scored %.2f, below the %.2f threshold)\n%s\n\n## Judge Feedback — address every point\n%s\n\nImprovements required:\n- %s\n\nProduce a complete, revised artifact.",
+			fullPrompt, verdict.Score, fo.evalCriteria.Threshold, output,
+			verdict.Feedback, strings.Join(verdict.Improvements, "\n- "),
+		)
+	}
+
+	result := map[string]interface{}{
+		"output":        output,
+		"spec_id":       task.SpecID,
+		"context_items": contextCount,
+		"model":         fo.agentModel,
+		"attempts":      attempts,
+	}
+	if verdict != nil {
+		result["evaluation"] = evaluationView(verdict)
+	}
+	if judgeNote != "" {
+		result["note"] = judgeNote
+	}
+	task.Result = result
+	return nil
+}
+
+// latestGenerateOutput returns the newest completed generate output for a
+// spec, along with the task ID that produced it.
+func (fo *FactoryOrchestrator) latestGenerateOutput(specID string) (output, taskID string, ok bool) {
+	fo.mu.RLock()
+	defer fo.mu.RUnlock()
+
+	var newest time.Time
+	for _, t := range fo.results {
+		if t.Type != "generate" || t.SpecID != specID || t.Status != TaskCompleted {
+			continue
+		}
+		res, isMap := t.Result.(map[string]interface{})
+		if !isMap {
+			continue
+		}
+		out, isStr := res["output"].(string)
+		if !isStr || out == "" {
+			continue
+		}
+		if !ok || t.CreatedAt.After(newest) {
+			newest = t.CreatedAt
+			output, taskID, ok = out, t.ID, true
+		}
+	}
+	return output, taskID, ok
+}
+
+// executeEvaluate judges the most recent completed generate output for the
+// task's spec (LLM-as-a-judge) and records the verdict.
+func (fo *FactoryOrchestrator) executeEvaluate(ctx context.Context, task *Task) error {
+	specPrompt, contextStr, contextCount, err := fo.buildTaskParts(ctx, task.SpecID)
+	if err != nil {
+		return err
+	}
+
+	if fo.agent == nil || fo.evaluator == nil {
+		promptOnlyResult(task, specPrompt, contextCount)
+		return nil
+	}
+
+	output, sourceTaskID, ok := fo.latestGenerateOutput(task.SpecID)
+	if !ok {
+		return fmt.Errorf("no completed generate output found for spec %s — run a generate task first", task.SpecID)
+	}
+
+	var verdict *eval.EvaluationResult
+	err = fo.withLLMSlot(ctx, func(callCtx context.Context) error {
+		verdict, err = fo.evaluator.EvaluateCode(callCtx, specPrompt, output, contextStr, fo.evalCriteria)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("llm evaluate task: %w", err)
+	}
+
+	task.Result = map[string]interface{}{
+		"evaluation":     evaluationView(verdict),
+		"evaluated_task": sourceTaskID,
+		"spec_id":        task.SpecID,
+		"model":          fo.agentModel,
+	}
+	return nil
 }
 
 // executeVerify executes a verification task
@@ -648,6 +835,7 @@ func (fo *FactoryOrchestrator) GetFactoryStatus() map[string]interface{} {
 		"workers":         workers,
 		"llm_enabled":     fo.agent != nil,
 		"llm_model":       fo.agentModel,
+		"llm_provider":    fo.agentProvider,
 		"tasks_pending":   pending,
 		"tasks_completed": completed,
 		"tasks_failed":    failed,

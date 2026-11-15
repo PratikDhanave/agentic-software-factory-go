@@ -138,8 +138,8 @@ func (s *MCPServer) handleToolsList(params map[string]interface{}) (interface{},
 				"properties": map[string]interface{}{
 					"type": map[string]interface{}{
 						"type":        "string",
-						"description": "Task type: generate, verify, review, refactor",
-						"enum":        []string{"generate", "verify", "review", "refactor"},
+						"description": "Task type: generate, verify, review, refactor, evaluate (judge the latest generate output)",
+						"enum":        []string{"generate", "verify", "review", "refactor", "evaluate"},
 					},
 					"spec_id": map[string]interface{}{
 						"type":        "string",

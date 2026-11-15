@@ -30,7 +30,7 @@ var launchTaskTypes = map[string]string{
 	"review":   "review",
 	"bugfix":   "generate",
 	"feature":  "generate",
-	"eval":     "verify",
+	"eval":     "evaluate",
 	"refactor": "refactor",
 	"migrate":  "refactor",
 }
