@@ -116,6 +116,14 @@ func (s *webServer) routes() http.Handler {
 	apiMux.HandleFunc("/api/db/workflow/details", handlers.HandleWorkflowDetails)
 	apiMux.HandleFunc("/api/db/search", handlers.HandleSearchWorkflows)
 
+	// Integration endpoints
+	mux.HandleFunc("/webhooks/github", handlers.HandleGitHubWebhook)
+	apiMux.HandleFunc("/api/stream", handlers.HandleRealtimeStream)
+	apiMux.HandleFunc("/api/metrics/detailed", handlers.HandleMetrics)
+	apiMux.HandleFunc("/api/jobs/status", handlers.HandleJobStatus)
+	apiMux.HandleFunc("/api/jobs/list", handlers.HandleJobsList)
+	apiMux.HandleFunc("/api/audit/log", handlers.HandleAuditLog)
+
 	// Apply guard to API routes
 	mux.Handle("/api/", webguard.Guard(apiMux, "/api/"))
 
@@ -384,6 +392,11 @@ func main() {
 	server, err := newWebServer(workingDir)
 	if err != nil {
 		log.Fatalf("Error creating web server: %v", err)
+	}
+
+	// Initialize integration (webhooks, queue, realtime, metrics, security)
+	if err := handlers.InitializeIntegration(); err != nil {
+		log.Fatalf("Error initializing integration: %v", err)
 	}
 
 	// Initialize database (optional - can connect later)
