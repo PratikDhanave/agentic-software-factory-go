@@ -117,9 +117,9 @@ func (s *webServer) routes() http.Handler {
 	apiMux.HandleFunc("/api/db/search", handlers.HandleSearchWorkflows)
 
 	// Integration endpoints
-	mux.HandleFunc("/webhooks/github", handlers.HandleGitHubWebhook)
+	mux.HandleFunc("/webhooks/github", handlers.HandleGitHubWebhookIntegration)
 	apiMux.HandleFunc("/api/stream", handlers.HandleRealtimeStream)
-	apiMux.HandleFunc("/api/metrics/detailed", handlers.HandleMetrics)
+	apiMux.HandleFunc("/api/metrics/detailed", handlers.HandleMetricsDetailed)
 	apiMux.HandleFunc("/api/jobs/status", handlers.HandleJobStatus)
 	apiMux.HandleFunc("/api/jobs/list", handlers.HandleJobsList)
 	apiMux.HandleFunc("/api/audit/log", handlers.HandleAuditLog)

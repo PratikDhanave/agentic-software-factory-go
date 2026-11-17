@@ -59,8 +59,8 @@ func InitializeIntegration() error {
 	return nil
 }
 
-// HandleGitHubWebhook processes GitHub webhook events
-func HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
+// HandleGitHubWebhookIntegration processes GitHub webhook events (integration version)
+func HandleGitHubWebhookIntegration(w http.ResponseWriter, r *http.Request) {
 	// Rate limit check
 	clientIP := r.RemoteAddr
 	if !rateLimiter.Allow(clientIP) {
@@ -267,7 +267,8 @@ func HandleRealtimeStream(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[Stream] Client disconnected: %s", clientID)
 			return
 
-		case msg, ok := <-client.send:
+		default:
+			msg, ok := client.ReceiveMessage()
 			if !ok {
 				return
 			}
@@ -279,8 +280,8 @@ func HandleRealtimeStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// HandleMetrics returns current metrics
-func HandleMetrics(w http.ResponseWriter, r *http.Request) {
+// HandleMetricsDetailed returns detailed current metrics with queue info
+func HandleMetricsDetailed(w http.ResponseWriter, r *http.Request) {
 	if metricsCollector == nil {
 		http.Error(w, "Metrics not available", http.StatusServiceUnavailable)
 		return
