@@ -110,6 +110,11 @@ func (s *webServer) routes() http.Handler {
 	apiMux.HandleFunc("/api/tasks/", s.handleTask)
 	apiMux.HandleFunc("/api/workflows", s.handleWorkflows)
 	apiMux.HandleFunc("/api/workflows/", s.handleWorkflows)
+	apiMux.HandleFunc("/api/db/stats", handlers.HandleDatabaseStats)
+	apiMux.HandleFunc("/api/db/health", handlers.HandleDatabaseHealth)
+	apiMux.HandleFunc("/api/db/workflows", handlers.HandleWorkflowHistory)
+	apiMux.HandleFunc("/api/db/workflow/details", handlers.HandleWorkflowDetails)
+	apiMux.HandleFunc("/api/db/search", handlers.HandleSearchWorkflows)
 
 	// Apply guard to API routes
 	mux.Handle("/api/", webguard.Guard(apiMux, "/api/"))
@@ -381,8 +386,27 @@ func main() {
 		log.Fatalf("Error creating web server: %v", err)
 	}
 
+	// Initialize database (optional - can connect later)
+	dbDSN := os.Getenv("DATABASE_URL")
+	if dbDSN == "" {
+		// Try to construct from env vars
+		host := os.Getenv("DB_HOST")
+		if host != "" {
+			// Database env vars provided, initialize
+			if err := handlers.InitDatabase(""); err != nil {
+				log.Printf("Warning: Database initialization failed: %v", err)
+				log.Println("Continuing without database persistence...")
+			}
+		}
+	} else {
+		if err := handlers.InitDatabase(dbDSN); err != nil {
+			log.Printf("Warning: Database initialization failed: %v", err)
+			log.Println("Continuing without database persistence...")
+		}
+	}
+
 	fmt.Printf("ASF Web Server starting on %s\n", addr)
-	fmt.Println("Dashboard: http://%s\n", addr)
+	fmt.Printf("Dashboard: http://%s\n", addr)
 	fmt.Println("7-Layer Agent Endpoints:")
 	fmt.Println("  POST /api/agents/run              - Execute 7-layer agent (SSE)")
 	fmt.Println("  GET  /api/agents/status           - Get result")

@@ -1,73 +1,28 @@
 version: '3.8'
 
 services:
-  # Ollama LLM Service
-  ollama:
-    image: ollama/ollama:latest
-    container_name: asf-ollama
-    ports:
-      - "11434:11434"
+  postgres:
+    image: postgres:15-alpine
+    container_name: asf-postgres
     environment:
-      OLLAMA_HOST: "0.0.0.0:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-    restart: unless-stopped
-
-  # Backend API + MCP Server
-  asf-web:
-    build: .
-    container_name: asf-web
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: asf
     ports:
-      - "8080:8080"
-    environment:
-      GITHUB_TOKEN: ${GITHUB_TOKEN}
-      OLLAMA_URL: "http://ollama:11434"
-      OLLAMA_MODEL: "mistral"
-      PORT: 8080
+      - "5432:5432"
     volumes:
-      - asf-data:/app/data
-    depends_on:
-      - ollama
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
-    restart: unless-stopped
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - asf-network
 
-  # Frontend (Next.js)
-  web-ui:
-    build:
-      context: ./web-ui
-      dockerfile: Dockerfile
-    container_name: asf-ui
-    ports:
-      - "3000:3000"
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8080
-    depends_on:
-      - asf-web
-    restart: unless-stopped
-
-  # Optional: Caddy reverse proxy
-  caddy:
-    image: caddy:alpine
-    container_name: asf-caddy
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - asf-web
-      - web-ui
-    restart: unless-stopped
+networks:
+  asf-network:
+    driver: bridge
 
 volumes:
-  asf-data:
-  ollama-data:
-  caddy-data:
-  caddy-config:
+  postgres_data:
