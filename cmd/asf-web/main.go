@@ -359,3 +359,10 @@ func main() {
 		log.Fatalf("Server error: %v", err)
 	}
 }
+
+	// Factory API endpoints
+	apiMux.HandleFunc("/api/factory/spec-to-code", handlers.HandleSpecToCode)
+	apiMux.HandleFunc("/api/factory/code-review", handlers.HandleCodeReview)
+	apiMux.HandleFunc("/api/factory/generate-code", handlers.HandleGenerateCode)
+	apiMux.HandleFunc("/api/factory/execute-task", handlers.HandleExecuteTask)
+	apiMux.HandleFunc("/api/factory/stream-task", handlers.HandleStreamTask)

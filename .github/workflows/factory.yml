@@ -1,0 +1,32 @@
+name: Factory Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Triage Issue
+        run: |
+          curl -X POST http://localhost:8080/api/github/triage \
+            -H "Content-Type: application/json" \
+            -d '{
+              "owner": "${{ github.repository_owner }}",
+              "repo": "${{ github.event.repository.name }}",
+              "issue": "${{ github.event.issue.number }}",
+              "token": "${{ secrets.GITHUB_TOKEN }}"
+            }'
+
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Code Review
+        run: echo "Running code review..."
