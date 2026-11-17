@@ -161,3 +161,38 @@ func HandleMCPInfo(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 }
+
+// HandleLLMAgent executes a task with LLM-driven decision making
+func HandleLLMAgent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	var req struct {
+		AgentName string `json:"agent_name"`
+		Task      string `json:"task"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+		return
+	}
+
+	// Create LLM agent
+	agent := agents.NewLLMAgent(req.AgentName)
+
+	// Execute task with reasoning
+	result, err := agent.ExecuteTask(req.Task)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(result))
+}

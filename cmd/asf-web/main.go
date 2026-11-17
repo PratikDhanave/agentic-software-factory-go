@@ -78,6 +78,7 @@ func (s *webServer) routes() http.Handler {
 	mux.HandleFunc("/api/github/token", s.handleGitHubToken)
 	mux.HandleFunc("/api/mcp/info", handlers.HandleMCPInfo)
 	mux.HandleFunc("/api/mcp/rpc", handlers.HandleMCPServer)
+	mux.HandleFunc("/health", handlers.HandleHealth)
 	mux.HandleFunc("/", s.handleRoot)
 
 	// Guarded API endpoints
@@ -96,6 +97,9 @@ func (s *webServer) routes() http.Handler {
 	apiMux.HandleFunc("/api/github/triage/status", handlers.HandleTriageStatus)
 	apiMux.HandleFunc("/api/mcp/task", handlers.HandleMCPTask)
 	apiMux.HandleFunc("/api/mcp/tools", handlers.HandleMCPTools)
+	apiMux.HandleFunc("/api/agents/llm", handlers.HandleLLMAgent)
+	apiMux.HandleFunc("/api/dashboard", handlers.HandleDashboard)
+	apiMux.HandleFunc("/api/system/metrics", handlers.HandleSystemMetrics)
 	apiMux.HandleFunc("/api/state-machines", s.handleStateMachines)
 	apiMux.HandleFunc("/api/tasks", s.handleTask)
 	apiMux.HandleFunc("/api/tasks/", s.handleTask)

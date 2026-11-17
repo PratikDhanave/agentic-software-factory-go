@@ -39,6 +39,14 @@ func (g *GitHubMCPTool) Call(toolName string, params map[string]interface{}) Git
 		return g.postComment(params)
 	case "create_pr":
 		return g.createPR(params)
+	case "get_pulls":
+		return g.getPulls(params)
+	case "merge_pr":
+		return g.mergePR(params)
+	case "get_releases":
+		return g.getReleases(params)
+	case "create_release":
+		return g.createRelease(params)
 	default:
 		return GitHubToolResult{
 			Success: false,
@@ -129,6 +137,101 @@ func (g *GitHubMCPTool) createPR(params map[string]interface{}) GitHubToolResult
 			"pr_number": 123,
 			"title":     title,
 			"url":       "https://github.com/owner/repo/pull/123",
+		},
+	}
+}
+
+func (g *GitHubMCPTool) getPulls(params map[string]interface{}) GitHubToolResult {
+	owner, ok := params["owner"].(string)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "owner required"}
+	}
+	repo, ok := params["repo"].(string)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "repo required"}
+	}
+	state, _ := params["state"].(string)
+	if state == "" {
+		state = "open"
+	}
+
+	return GitHubToolResult{
+		Success: true,
+		Result: map[string]interface{}{
+			"owner": owner,
+			"repo":  repo,
+			"state": state,
+			"pulls": []string{},
+		},
+	}
+}
+
+func (g *GitHubMCPTool) mergePR(params map[string]interface{}) GitHubToolResult {
+	owner, ok := params["owner"].(string)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "owner required"}
+	}
+	repo, ok := params["repo"].(string)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "repo required"}
+	}
+	pr, ok := params["pr"].(float64)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "pr required"}
+	}
+
+	return GitHubToolResult{
+		Success: true,
+		Result: map[string]interface{}{
+			"owner":  owner,
+			"repo":   repo,
+			"pr":     int(pr),
+			"status": "merged",
+		},
+	}
+}
+
+func (g *GitHubMCPTool) getReleases(params map[string]interface{}) GitHubToolResult {
+	owner, ok := params["owner"].(string)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "owner required"}
+	}
+	repo, ok := params["repo"].(string)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "repo required"}
+	}
+
+	return GitHubToolResult{
+		Success: true,
+		Result: map[string]interface{}{
+			"owner":    owner,
+			"repo":     repo,
+			"releases": []string{},
+		},
+	}
+}
+
+func (g *GitHubMCPTool) createRelease(params map[string]interface{}) GitHubToolResult {
+	owner, ok := params["owner"].(string)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "owner required"}
+	}
+	repo, ok := params["repo"].(string)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "repo required"}
+	}
+	tag, ok := params["tag"].(string)
+	if !ok {
+		return GitHubToolResult{Success: false, Error: "tag required"}
+	}
+
+	return GitHubToolResult{
+		Success: true,
+		Result: map[string]interface{}{
+			"owner": owner,
+			"repo":  repo,
+			"tag":   tag,
+			"url":   fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag),
 		},
 	}
 }
