@@ -85,6 +85,11 @@ func (s *webServer) routes() http.Handler {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/factory/status", s.handleFactoryStatus)
 	apiMux.HandleFunc("/api/factory/launch/", s.handleFactoryLaunch)
+	apiMux.HandleFunc("/api/factory/spec-to-code", handlers.HandleSpecToCode)
+	apiMux.HandleFunc("/api/factory/code-review", handlers.HandleCodeReview)
+	apiMux.HandleFunc("/api/factory/generate-code", handlers.HandleGenerateCode)
+	apiMux.HandleFunc("/api/factory/execute-task", handlers.HandleExecuteTask)
+	apiMux.HandleFunc("/api/factory/stream-task", handlers.HandleStreamTask)
 	apiMux.HandleFunc("/api/harness/status", s.handleHarnessStatus)
 	apiMux.HandleFunc("/api/specs", s.handleListSpecs)
 	apiMux.HandleFunc("/api/agents", s.handleListAgents)
@@ -103,6 +108,8 @@ func (s *webServer) routes() http.Handler {
 	apiMux.HandleFunc("/api/state-machines", s.handleStateMachines)
 	apiMux.HandleFunc("/api/tasks", s.handleTask)
 	apiMux.HandleFunc("/api/tasks/", s.handleTask)
+	apiMux.HandleFunc("/api/workflows", s.handleWorkflows)
+	apiMux.HandleFunc("/api/workflows/", s.handleWorkflows)
 
 	// Apply guard to API routes
 	mux.Handle("/api/", webguard.Guard(apiMux, "/api/"))
@@ -326,6 +333,42 @@ func (s *webServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "./web/index.html")
 }
 
+func (s *webServer) handleWorkflows(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var req struct {
+			Type        string `json:"type"`
+			Description string `json:"description"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+			return
+		}
+
+		writeJSON(w, http.StatusAccepted, map[string]interface{}{
+			"id":          "workflow-" + time.Now().Format("20060102150405"),
+			"type":        req.Type,
+			"status":      "pending",
+			"description": req.Description,
+		})
+		return
+	}
+
+	tasks := s.factory.RecentTasks(20)
+	workflows := make([]map[string]interface{}, 0, len(tasks))
+	for _, t := range tasks {
+		workflows = append(workflows, map[string]interface{}{
+			"id":       t.ID,
+			"type":     t.Type,
+			"status":   t.Status,
+			"progress": 0,
+			"duration": 0,
+			"result":   t.Result,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"workflows": workflows})
+}
+
 func main() {
 	addr := "localhost:8080"
 	if len(os.Args) > 1 {
@@ -339,6 +382,7 @@ func main() {
 	}
 
 	fmt.Printf("ASF Web Server starting on %s\n", addr)
+	fmt.Println("Dashboard: http://%s\n", addr)
 	fmt.Println("7-Layer Agent Endpoints:")
 	fmt.Println("  POST /api/agents/run              - Execute 7-layer agent (SSE)")
 	fmt.Println("  GET  /api/agents/status           - Get result")
@@ -354,15 +398,10 @@ func main() {
 	fmt.Println("Factory Endpoints:")
 	fmt.Println("  GET  /api/factory/status          - Factory status")
 	fmt.Println("  POST /api/factory/launch          - Launch task")
+	fmt.Println("  POST /api/factory/spec-to-code    - Generate code from spec")
+	fmt.Println("  POST /api/factory/code-review     - Review code")
 
 	if err := http.ListenAndServe(addr, server.routes()); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
 }
-
-	// Factory API endpoints
-	apiMux.HandleFunc("/api/factory/spec-to-code", handlers.HandleSpecToCode)
-	apiMux.HandleFunc("/api/factory/code-review", handlers.HandleCodeReview)
-	apiMux.HandleFunc("/api/factory/generate-code", handlers.HandleGenerateCode)
-	apiMux.HandleFunc("/api/factory/execute-task", handlers.HandleExecuteTask)
-	apiMux.HandleFunc("/api/factory/stream-task", handlers.HandleStreamTask)

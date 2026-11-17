@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Agentic Software Factory</title>
+	<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+	<div class="container">
+		<!-- Sidebar Navigation -->
+		<aside class="sidebar">
+			<div class="logo">
+				<h1>⚙️ ASF</h1>
+				<p>Agentic Software Factory</p>
+			</div>
+			<nav class="nav-menu">
+				<a href="#dashboard" class="nav-item active" data-page="dashboard">📊 Dashboard</a>
+				<a href="#workflows" class="nav-item" data-page="workflows">⚡ Workflows</a>
+				<a href="#triage" class="nav-item" data-page="triage">🏷️ Triage</a>
+				<a href="#reviews" class="nav-item" data-page="reviews">👀 Reviews</a>
+				<a href="#bugs" class="nav-item" data-page="bugs">🐛 Bugs</a>
+				<a href="#docs" class="nav-item" data-page="docs">📖 Docs</a>
+				<a href="#settings" class="nav-item" data-page="settings">⚙️ Settings</a>
+			</nav>
+			<div class="sidebar-footer">
+				<div class="status-indicator" id="health-status">
+					<span class="dot"></span>
+					<span>Healthy</span>
+				</div>
+			</div>
+		</aside>
+
+		<!-- Main Content -->
+		<main class="main-content">
+			<!-- Header -->
+			<header class="header">
+				<div class="header-title">
+					<h2 id="page-title">Dashboard</h2>
+					<p id="page-subtitle">Real-time factory operations</p>
+				</div>
+				<div class="header-actions">
+					<button class="btn btn-secondary" id="refresh-btn">🔄 Refresh</button>
+					<button class="btn btn-primary" id="new-workflow-btn">+ New Workflow</button>
+				</div>
+			</header>
+
+			<!-- Page Content -->
+			<section class="content">
+				<!-- Dashboard Page -->
+				<div id="page-dashboard" class="page active">
+					<!-- Key Metrics -->
+					<div class="metrics-grid">
+						<div class="metric-card">
+							<div class="metric-icon">📋</div>
+							<div class="metric-content">
+								<div class="metric-label">Total Issues</div>
+								<div class="metric-value" id="metric-total-issues">0</div>
+								<div class="metric-trend">this week</div>
+							</div>
+						</div>
+						<div class="metric-card">
+							<div class="metric-icon">✅</div>
+							<div class="metric-content">
+								<div class="metric-label">Ready to Build</div>
+								<div class="metric-value" id="metric-ready-count">0</div>
+								<div class="metric-trend">issues</div>
+							</div>
+						</div>
+						<div class="metric-card">
+							<div class="metric-icon">⚡</div>
+							<div class="metric-content">
+								<div class="metric-label">Active Workflows</div>
+								<div class="metric-value" id="metric-active-workflows">0</div>
+								<div class="metric-trend">running</div>
+							</div>
+						</div>
+						<div class="metric-card">
+							<div class="metric-icon">🎯</div>
+							<div class="metric-content">
+								<div class="metric-label">Success Rate</div>
+								<div class="metric-value" id="metric-success-rate">0%</div>
+								<div class="metric-trend">last 24h</div>
+							</div>
+						</div>
+					</div>
+
+					<!-- Charts Row -->
+					<div class="charts-grid">
+						<div class="card">
+							<div class="card-header">
+								<h3>Issue Distribution</h3>
+								<span class="badge">By Category</span>
+							</div>
+							<div class="chart-container">
+								<canvas id="issues-chart"></canvas>
+							</div>
+						</div>
+
+						<div class="card">
+							<div class="card-header">
+								<h3>Workflow Status</h3>
+								<span class="badge">Last 7 days</span>
+							</div>
+							<div class="chart-container">
+								<canvas id="workflow-chart"></canvas>
+							</div>
+						</div>
+					</div>
+
+					<!-- Recent Workflows -->
+					<div class="card">
+						<div class="card-header">
+							<h3>Recent Workflows</h3>
+							<a href="#workflows" class="link">View all →</a>
+						</div>
+						<div class="table-container">
+							<table class="table">
+								<thead>
+									<tr>
+										<th>Workflow</th>
+										<th>Status</th>
+										<th>Progress</th>
+										<th>Duration</th>
+										<th>Action</th>
+									</tr>
+								</thead>
+								<tbody id="recent-workflows">
+									<tr class="loading">
+										<td colspan="5">Loading workflows...</td>
+									</tr>
+								</tbody>
+							</table>
+						</div>
+					</div>
+
+					<!-- Priority Issues -->
+					<div class="card">
+						<div class="card-header">
+							<h3>High Priority Issues</h3>
+							<span class="badge" id="priority-count">0</span>
+						</div>
+						<div class="issues-list" id="priority-issues">
+							<div class="empty-state">No priority issues</div>
+						</div>
+					</div>
+				</div>
+
+				<!-- Workflows Page -->
+				<div id="page-workflows" class="page">
+					<div class="page-header">
+						<div class="filter-group">
+							<input type="text" class="input" id="workflow-search" placeholder="Search workflows...">
+							<select class="input" id="workflow-filter">
+								<option value="">All Statuses</option>
+								<option value="success">Success</option>
+								<option value="failed">Failed</option>
+								<option value="running">Running</option>
+								<option value="pending">Pending</option>
+							</select>
+						</div>
+					</div>
+					<div class="workflows-grid" id="workflows-grid">
+						<div class="loading">Loading workflows...</div>
+					</div>
+				</div>
+
+				<!-- Triage Page -->
+				<div id="page-triage" class="page">
+					<div class="page-header">
+						<div class="stats-row">
+							<div class="stat-item">
+								<div class="stat-label">Total Analyzed</div>
+								<div class="stat-value" id="triage-total">0</div>
+							</div>
+							<div class="stat-item">
+								<div class="stat-label">By Priority</div>
+								<div class="stat-inline" id="triage-priority">—</div>
+							</div>
+						</div>
+					</div>
+					<div class="issues-grid" id="triage-grid">
+						<div class="loading">Loading triage data...</div>
+					</div>
+				</div>
+
+				<!-- Reviews Page -->
+				<div id="page-reviews" class="page">
+					<div class="page-header">
+						<div class="filter-group">
+							<select class="input" id="review-filter">
+								<option value="">All Results</option>
+								<option value="approved">Approved</option>
+								<option value="changes-requested">Changes Requested</option>
+								<option value="pending">Pending Review</option>
+							</select>
+						</div>
+					</div>
+					<div class="reviews-list" id="reviews-list">
+						<div class="loading">Loading reviews...</div>
+					</div>
+				</div>
+
+				<!-- Bugs Page -->
+				<div id="page-bugs" class="page">
+					<div class="page-header">
+						<div class="stats-row">
+							<div class="stat-item">
+								<div class="stat-label">Total Bugs Found</div>
+								<div class="stat-value" id="bugs-total">0</div>
+							</div>
+							<div class="stat-item">
+								<div class="stat-label">Fixed</div>
+								<div class="stat-value" id="bugs-fixed">0</div>
+							</div>
+							<div class="stat-item">
+								<div class="stat-label">Critical</div>
+								<div class="stat-value" id="bugs-critical">0</div>
+							</div>
+						</div>
+					</div>
+					<div class="bugs-grid" id="bugs-grid">
+						<div class="loading">Loading bugs...</div>
+					</div>
+				</div>
+
+				<!-- Docs Page -->
+				<div id="page-docs" class="page">
+					<div class="page-header">
+						<div class="filter-group">
+							<input type="text" class="input" id="docs-search" placeholder="Search documentation...">
+						</div>
+					</div>
+					<div class="docs-grid" id="docs-grid">
+						<div class="loading">Loading docs...</div>
+					</div>
+				</div>
+
+				<!-- Settings Page -->
+				<div id="page-settings" class="page">
+					<div class="settings-container">
+						<div class="card">
+							<div class="card-header">
+								<h3>System Settings</h3>
+							</div>
+							<div class="settings-group">
+								<label>Ollama URL</label>
+								<input type="text" class="input" id="setting-ollama-url" value="http://localhost:11434">
+								<label>Ollama Model</label>
+								<input type="text" class="input" id="setting-ollama-model" value="mistral">
+								<label>GitHub Token</label>
+								<input type="password" class="input" id="setting-github-token" placeholder="••••••••">
+								<button class="btn btn-primary" id="save-settings-btn">💾 Save Settings</button>
+							</div>
+						</div>
+
+						<div class="card">
+							<div class="card-header">
+								<h3>System Status</h3>
+							</div>
+							<div class="status-grid" id="system-status">
+								<div class="loading">Loading status...</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</section>
+		</main>
+
+		<!-- Modal -->
+		<div id="modal" class="modal">
+			<div class="modal-content">
+				<div class="modal-header">
+					<h3 id="modal-title"></h3>
+					<button class="modal-close" id="modal-close">&times;</button>
+				</div>
+				<div class="modal-body" id="modal-body"></div>
+				<div class="modal-footer" id="modal-footer"></div>
+			</div>
+		</div>
+	</div>
+
+	<!-- Scripts -->
+	<script src="/static/chart.min.js"></script>
+	<script src="/static/dashboard.js"></script>
+</body>
+</html>

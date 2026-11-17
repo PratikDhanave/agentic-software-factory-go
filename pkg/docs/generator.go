@@ -3,7 +3,6 @@ package docs
 import (
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/llm"
 )
