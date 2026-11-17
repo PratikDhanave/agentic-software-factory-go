@@ -43,7 +43,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Set environment variables
 ENV GITHUB_TOKEN="" \
-    ANTHROPIC_API_KEY="" \
+    OLLAMA_URL="http://ollama:11434" \
+    OLLAMA_MODEL="mistral" \
     PORT=8080
 
 # Run server

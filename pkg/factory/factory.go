@@ -16,7 +16,6 @@ import (
 	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/eval"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
-	"github.com/PratikDhanave/agentic-software-factory-go/pkg/llm"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/persistence"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
@@ -147,24 +146,8 @@ func NewFactoryOrchestrator(workingDir string, maxWorkers int) (*FactoryOrchestr
 		shutdown:      make(chan struct{}),
 	}
 
-	// Wire the LLM when a provider is configured and authorized; otherwise
-	// the factory runs in prompt-only mode. The provider layer is agnostic —
-	// see pkg/llm for the ASF_LLM_PROVIDER options.
-	if client := llm.FromEnv(); client != nil {
-		fo.agent = client
-		fo.agentModel = client.Model()
-		fo.agentProvider = client.Provider()
-		fo.llmSlots = make(chan struct{}, llmMaxConcurrent())
-		fo.contextBudget = contextBudgetFor(fo.agentProvider)
-		fo.evaluator = eval.NewEvaluationEngine(client)
-		fo.evalCriteria = eval.DefaultEvaluationCriteria()
-		log.Printf("factory: LLM enabled (provider %s, model %s, max %d concurrent calls, judge threshold %.2f, context budget %d chars)",
-			fo.agentProvider, fo.agentModel, cap(fo.llmSlots), fo.evalCriteria.Threshold, fo.contextBudget)
-	} else if msg := llm.ConfigError(); msg != "" {
-		log.Printf("factory: running in prompt-only mode — %s", msg)
-	} else {
-		log.Printf("factory: no LLM provider configured — running in prompt-only mode")
-	}
+	// Factory runs in prompt-only mode with Ollama support via agents layer
+	log.Printf("factory: running in prompt-only mode (use agents with Ollama for LLM)")
 
 	// Initialize workers
 	for i := 0; i < maxWorkers; i++ {

@@ -1,103 +1,87 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
-	"os"
-	"strings"
-	"time"
 )
 
-// Ollama support rides on the OpenAI-compatible wire format (Ollama serves
-// it under /v1) with zero-config defaults: the standard local URL, and the
-// first chat-capable installed model when ASF_MODEL is unset.
-
-// ollamaBaseURL resolves the Ollama server root (no /v1 suffix) from
-// ASF_LLM_BASE_URL, OLLAMA_HOST, or the standard local default.
-func ollamaBaseURL() string {
-	if b := os.Getenv("ASF_LLM_BASE_URL"); b != "" {
-		return strings.TrimSuffix(strings.TrimRight(b, "/"), "/v1")
-	}
-	if h := os.Getenv("OLLAMA_HOST"); h != "" {
-		if !strings.Contains(h, "://") {
-			h = "http://" + h
-		}
-		return strings.TrimRight(h, "/")
-	}
-	return "http://localhost:11434"
+type OllamaClient struct {
+	baseURL string
+	model   string
+	client  *http.Client
 }
 
-// newOllama builds the Ollama provider, or returns nil when no usable model
-// can be determined (ConfigError explains why).
-func newOllama() Client {
-	base := ollamaBaseURL()
-	model := os.Getenv("ASF_MODEL")
-	if model == "" {
-		model = firstOllamaChatModel(base)
+type OllamaRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool   `json:"stream"`
+}
+
+type OllamaResponse struct {
+	Model    string `json:"model"`
+	Response string `json:"response"`
+	Done     bool   `json:"done"`
+}
+
+func NewOllamaClient(baseURL, model string) *OllamaClient {
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
 	}
 	if model == "" {
-		return nil
+		model = "mistral"
 	}
-	return &openAICompatClient{
-		provider:  "ollama",
-		baseURL:   base + "/v1",
-		model:     model,
-		maxTokens: 16000,
-		http:      &http.Client{},
+	return &OllamaClient{
+		baseURL: baseURL,
+		model:   model,
+		client:  &http.Client{},
 	}
 }
 
-// detectOllama returns an Ollama provider only when a server is actually
-// reachable — used by FromEnv auto-detection so a stopped Ollama never
-// captures the factory.
-func detectOllama() Client {
-	if !ollamaReachable(ollamaBaseURL()) {
-		return nil
+func (o *OllamaClient) Analyze(prompt string) (string, error) {
+	log.Printf("[Ollama] Model: %s", o.model)
+	
+	reqBody := OllamaRequest{
+		Model:  o.model,
+		Prompt: prompt,
+		Stream: false,
 	}
-	return newOllama()
-}
 
-func ollamaReachable(base string) bool {
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(base + "/api/tags")
+	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return false
+		return "", err
+	}
+
+	url := fmt.Sprintf("%s/api/generate", o.baseURL)
+	resp, err := o.client.Post(url, "application/json", bytes.NewReader(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("Ollama not reachable at %s: %w", o.baseURL, err)
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
 
-// firstOllamaChatModel picks the first installed model that looks
-// chat-capable (embedding models are skipped). Returns "" when the server
-// is unreachable or has no usable model.
-func firstOllamaChatModel(base string) string {
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(base + "/api/tags")
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return ""
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Ollama error %d: %s", resp.StatusCode, string(body))
 	}
 
-	var tags struct {
-		Models []struct {
-			Name    string `json:"name"`
-			Details struct {
-				Family string `json:"family"`
-			} `json:"details"`
-		} `json:"models"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
-		return ""
+	var ollamaResp OllamaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+		return "", err
 	}
 
-	for _, m := range tags.Models {
-		if strings.Contains(m.Name, "embed") || strings.Contains(m.Details.Family, "bert") {
-			continue
-		}
-		return m.Name
+	return ollamaResp.Response, nil
+}
+
+func (o *OllamaClient) Health() error {
+	url := fmt.Sprintf("%s/api/tags", o.baseURL)
+	resp, err := o.client.Get(url)
+	if err != nil {
+		return fmt.Errorf("Ollama not reachable: %w", err)
 	}
-	return ""
+	defer resp.Body.Close()
+	log.Printf("[Ollama] ✅ Connected to %s", o.baseURL)
+	return nil
 }

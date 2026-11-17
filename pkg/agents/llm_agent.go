@@ -7,22 +7,31 @@ import (
 	"os"
 
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/access"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/llm"
 )
 
 type LLMAgent struct {
 	name       string
 	mcp        *access.MCPToolHandler
-	model      string
-	apiKey     string
+	ollama     *llm.OllamaClient
 	maxSteps   int
 }
 
 func NewLLMAgent(name string) *LLMAgent {
+	ollamaURL := os.Getenv("OLLAMA_URL")
+	if ollamaURL == "" {
+		ollamaURL = "http://localhost:11434"
+	}
+
+	ollamaModel := os.Getenv("OLLAMA_MODEL")
+	if ollamaModel == "" {
+		ollamaModel = "mistral"
+	}
+
 	return &LLMAgent{
-		name:    name,
-		mcp:     access.NewMCPToolHandler(os.Getenv("GITHUB_TOKEN")),
-		model:   "claude-3-5-sonnet-20241022", // Latest Claude model
-		apiKey:  os.Getenv("ANTHROPIC_API_KEY"),
+		name:     name,
+		mcp:      access.NewMCPToolHandler(os.Getenv("GITHUB_TOKEN")),
+		ollama:   llm.NewOllamaClient(ollamaURL, ollamaModel),
 		maxSteps: 10,
 	}
 }
@@ -44,25 +53,44 @@ type Message struct {
 	Content interface{}   `json:"content"`
 }
 
-// ExecuteTask runs agent reasoning loop with tool use
+// ExecuteTask runs agent reasoning loop with Ollama
 func (a *LLMAgent) ExecuteTask(task string) (string, error) {
 	log.Printf("[LLMAgent] Task: %s", task)
 
-	if a.apiKey == "" {
-		log.Printf("[LLMAgent] Warning: ANTHROPIC_API_KEY not set, using reasoning mode")
+	// Try Ollama first
+	if err := a.ollama.Health(); err == nil {
+		return a.ExecuteTaskWithOllama(task)
+	}
+
+	log.Printf("[LLMAgent] Ollama not available, using reasoning mode")
+	return a.ExecuteTaskWithReasoning(task)
+}
+
+// ExecuteTaskWithOllama uses Ollama for reasoning
+func (a *LLMAgent) ExecuteTaskWithOllama(task string) (string, error) {
+	log.Printf("[LLMAgent] Using Ollama for analysis")
+
+	prompt := fmt.Sprintf(`You are a GitHub automation agent. Your task: "%s"
+
+Analyze this and determine:
+1. Which GitHub tools are needed
+2. The order to call them
+3. Expected outcomes
+
+Be concise.`, task)
+
+	analysis, err := a.ollama.Analyze(prompt)
+	if err != nil {
+		log.Printf("[LLMAgent] Ollama error: %v, falling back to reasoning", err)
 		return a.ExecuteTaskWithReasoning(task)
 	}
 
-	// In production, would call Anthropic API here
-	// For now, return structured response
 	response := map[string]interface{}{
 		"agent":    a.name,
 		"task":     task,
-		"status":   "ready",
-		"message":  "LLM agent ready to execute with tool calling",
+		"mode":     "ollama",
+		"analysis": analysis,
 		"tools":    a.getToolNames(),
-		"model":    a.model,
-		"reasoning": "Agent can now decide which GitHub tools to call based on natural language task",
 	}
 
 	result, _ := json.MarshalIndent(response, "", "  ")
