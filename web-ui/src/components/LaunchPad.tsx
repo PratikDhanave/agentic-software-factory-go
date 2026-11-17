@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { launchMachine, useMachine } from '@/lib/stateMachine';
+import { AgentCard } from './AgentCard';
 
 interface SpecOption {
   id: string;
@@ -159,8 +160,30 @@ export function LaunchPad() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Active Spec:</label>
+      {/* Agents Section */}
+      <div>
+        <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4">
+          Agents
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          <AgentCard
+            id="CodeGen"
+            name="Code Generator"
+            description="Generate production-ready code from specifications using 8-layer self-evolving agent"
+            icon="💻"
+            color="blue"
+          />
+        </div>
+      </div>
+
+      {/* Factory Features Section */}
+      <div>
+        <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4">
+          Factory Tasks
+        </h3>
+
+        <div className="flex items-center gap-4 mb-4">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Active Spec:</label>
         <select
           value={activeSpec}
           onChange={(e) => {
@@ -175,18 +198,19 @@ export function LaunchPad() {
           ))}
         </select>
       </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {features.map(feature => (
-          <FeatureCard
-            key={feature.id}
-            icon={feature.icon}
-            title={feature.title}
-            description={feature.description}
-            actionLabel={feature.actionLabel}
-            endpoint={feature.endpoint}
-            color={feature.color}
-          />
-        ))}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {features.map(feature => (
+            <FeatureCard
+              key={feature.id}
+              icon={feature.icon}
+              title={feature.title}
+              description={feature.description}
+              actionLabel={feature.actionLabel}
+              endpoint={feature.endpoint}
+              color={feature.color}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );

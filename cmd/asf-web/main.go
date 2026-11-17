@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PratikDhanave/agentic-software-factory-go/cmd/asf-web/handlers"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factorydef"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
@@ -73,17 +74,36 @@ func (s *webServer) routes() http.Handler {
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static"))))
 	mux.Handle("/templates/", http.StripPrefix("/templates/", http.FileServer(http.Dir("./web/templates"))))
 
-	mux.HandleFunc("/api/factory/status", s.handleFactoryStatus)
-	mux.HandleFunc("/api/factory/launch/", s.handleFactoryLaunch)
-	mux.HandleFunc("/api/harness/status", s.handleHarnessStatus)
-	mux.HandleFunc("/api/specs", s.handleListSpecs)
-	mux.HandleFunc("/api/agents", s.handleListAgents)
-	mux.HandleFunc("/api/state-machines", s.handleStateMachines)
-	mux.HandleFunc("/api/tasks", s.handleTask)
-	mux.HandleFunc("/api/tasks/", s.handleTask)
+	// Public endpoints (not guarded)
+	mux.HandleFunc("/api/github/token", s.handleGitHubToken)
+	mux.HandleFunc("/api/mcp/info", handlers.HandleMCPInfo)
+	mux.HandleFunc("/api/mcp/rpc", handlers.HandleMCPServer)
 	mux.HandleFunc("/", s.handleRoot)
 
-	return webguard.Guard(mux, "/api/")
+	// Guarded API endpoints
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/factory/status", s.handleFactoryStatus)
+	apiMux.HandleFunc("/api/factory/launch/", s.handleFactoryLaunch)
+	apiMux.HandleFunc("/api/harness/status", s.handleHarnessStatus)
+	apiMux.HandleFunc("/api/specs", s.handleListSpecs)
+	apiMux.HandleFunc("/api/agents", s.handleListAgents)
+	apiMux.HandleFunc("/api/agents/run", handlers.HandleRunAgent)
+	apiMux.HandleFunc("/api/agents/status", handlers.HandleAgentStatus)
+	apiMux.HandleFunc("/api/agents/metrics", handlers.HandleMetrics)
+	apiMux.HandleFunc("/api/github/review", handlers.HandleGitHubReview)
+	apiMux.HandleFunc("/api/github/review/status", handlers.HandleReviewStatus)
+	apiMux.HandleFunc("/api/github/triage", handlers.HandleGitHubTriage)
+	apiMux.HandleFunc("/api/github/triage/status", handlers.HandleTriageStatus)
+	apiMux.HandleFunc("/api/mcp/task", handlers.HandleMCPTask)
+	apiMux.HandleFunc("/api/mcp/tools", handlers.HandleMCPTools)
+	apiMux.HandleFunc("/api/state-machines", s.handleStateMachines)
+	apiMux.HandleFunc("/api/tasks", s.handleTask)
+	apiMux.HandleFunc("/api/tasks/", s.handleTask)
+
+	// Apply guard to API routes
+	mux.Handle("/api/", webguard.Guard(apiMux, "/api/"))
+
+	return mux
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
@@ -286,6 +306,14 @@ func (s *webServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": agents})
 }
 
+func (s *webServer) handleGitHubToken(w http.ResponseWriter, r *http.Request) {
+	token := os.Getenv("GITHUB_TOKEN")
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"token": token,
+		"loaded": token != "",
+	})
+}
+
 func (s *webServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -307,13 +335,21 @@ func main() {
 	}
 
 	fmt.Printf("ASF Web Server starting on %s\n", addr)
-	fmt.Println("Endpoints:")
-	fmt.Println("  GET  /api/factory/status        - Factory status")
-	fmt.Println("  POST /api/factory/launch/{a}    - Launch a task (review|bugfix|feature|eval|refactor|migrate)")
-	fmt.Println("  GET  /api/tasks/{id}            - Task snapshot")
-	fmt.Println("  GET  /api/tasks/{id}/stream     - Task state stream (SSE, ends at terminal state)")
-	fmt.Println("  GET  /api/state-machines        - State machine declarations")
-	fmt.Println("  GET  /api/specs | /api/agents | /api/harness/status")
+	fmt.Println("7-Layer Agent Endpoints:")
+	fmt.Println("  POST /api/agents/run              - Execute 7-layer agent (SSE)")
+	fmt.Println("  GET  /api/agents/status           - Get result")
+	fmt.Println("  GET  /api/agents/metrics          - Get metrics")
+	fmt.Println("GitHub Integration Endpoints:")
+	fmt.Println("  GET  /api/github/review           - Review PR (SSE streaming)")
+	fmt.Println("       ?owner=X&repo=Y&pr=N&token=Z")
+	fmt.Println("  GET  /api/github/review/status    - Get review result")
+	fmt.Println("GitHub Automatic Triage Endpoints:")
+	fmt.Println("  GET  /api/github/triage           - Triage issue (SSE streaming)")
+	fmt.Println("       ?owner=X&repo=Y&issue=N&token=Z")
+	fmt.Println("  GET  /api/github/triage/status    - Get triage result")
+	fmt.Println("Factory Endpoints:")
+	fmt.Println("  GET  /api/factory/status          - Factory status")
+	fmt.Println("  POST /api/factory/launch          - Launch task")
 
 	if err := http.ListenAndServe(addr, server.routes()); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
