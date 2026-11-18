@@ -10,17 +10,20 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/application/jobs"
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain/entities"
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain/services"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/infrastructure/observability"
 )
 
 type WebhookHandler struct {
 	submitJobUC *jobs.SubmitJobUseCase
 	logger      services.Logger
+	observer    *observability.UseCaseObserver
 }
 
-func NewWebhookHandler(submitJobUC *jobs.SubmitJobUseCase, logger services.Logger) *WebhookHandler {
+func NewWebhookHandler(submitJobUC *jobs.SubmitJobUseCase, logger services.Logger, observer *observability.UseCaseObserver) *WebhookHandler {
 	return &WebhookHandler{
 		submitJobUC: submitJobUC,
 		logger:      logger,
+		observer:    observer,
 	}
 }
 
@@ -60,7 +63,11 @@ func (h *WebhookHandler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 	)
 	job.Priority = 5
 
-	if err := h.submitJobUC.Execute(ctx, job); err != nil {
+	if err := h.observer.ObserveExecution(ctx, "submit-job", func(span observability.SpanContext) error {
+		span.SetAttribute("job_id", job.ID)
+		span.SetAttribute("job_type", job.Type)
+		return h.submitJobUC.Execute(ctx, job)
+	}); err != nil {
 		h.logger.Error("failed to submit job", err)
 		http.Error(w, "failed to submit job", http.StatusInternalServerError)
 		return

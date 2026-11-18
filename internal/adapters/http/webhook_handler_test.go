@@ -11,15 +11,20 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/adapters/persistence"
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/infrastructure/logging"
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/infrastructure/messaging"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/infrastructure/observability"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/infrastructure/tracing"
 )
 
 func TestWebhookHandler_HandleGitHubWebhook_IssueOpened(t *testing.T) {
-	logger := logging.NewStdLogger()
+	logger := logging.NewStructuredLogger("info")
 	jobRepo := persistence.NewInMemoryJobRepository()
 	eventBus := messaging.NewEventBus()
 
 	submitJobUC := jobs.NewSubmitJobUseCase(jobRepo, logger, eventBus)
-	handler := NewWebhookHandler(submitJobUC, logger)
+	tracer := tracing.NewNoOpTracer()
+	obs := observability.NewObservability(logger, tracer)
+	observer := observability.NewUseCaseObserver(obs)
+	handler := NewWebhookHandler(submitJobUC, logger, observer)
 
 	payload := []byte(`{
 		"action": "opened",
@@ -52,12 +57,15 @@ func TestWebhookHandler_HandleGitHubWebhook_IssueOpened(t *testing.T) {
 }
 
 func TestWebhookHandler_HandleGitHubWebhook_MissingEvent(t *testing.T) {
-	logger := logging.NewStdLogger()
+	logger := logging.NewStructuredLogger("info")
 	jobRepo := persistence.NewInMemoryJobRepository()
 	eventBus := messaging.NewEventBus()
 
 	submitJobUC := jobs.NewSubmitJobUseCase(jobRepo, logger, eventBus)
-	handler := NewWebhookHandler(submitJobUC, logger)
+	tracer := tracing.NewNoOpTracer()
+	obs := observability.NewObservability(logger, tracer)
+	observer := observability.NewUseCaseObserver(obs)
+	handler := NewWebhookHandler(submitJobUC, logger, observer)
 
 	req := httptest.NewRequest("POST", "/webhook", nil)
 
@@ -70,12 +78,15 @@ func TestWebhookHandler_HandleGitHubWebhook_MissingEvent(t *testing.T) {
 }
 
 func TestWebhookHandler_HandleGitHubWebhook_IgnoredAction(t *testing.T) {
-	logger := logging.NewStdLogger()
+	logger := logging.NewStructuredLogger("info")
 	jobRepo := persistence.NewInMemoryJobRepository()
 	eventBus := messaging.NewEventBus()
 
 	submitJobUC := jobs.NewSubmitJobUseCase(jobRepo, logger, eventBus)
-	handler := NewWebhookHandler(submitJobUC, logger)
+	tracer := tracing.NewNoOpTracer()
+	obs := observability.NewObservability(logger, tracer)
+	observer := observability.NewUseCaseObserver(obs)
+	handler := NewWebhookHandler(submitJobUC, logger, observer)
 
 	payload := []byte(`{
 		"action": "closed",
