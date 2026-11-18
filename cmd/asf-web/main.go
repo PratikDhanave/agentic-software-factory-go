@@ -83,6 +83,13 @@ func (s *webServer) routes() http.Handler {
 
 	// Guarded API endpoints
 	apiMux := http.NewServeMux()
+
+	// Add v1 API endpoints for UI/Frontend
+	apiMux.HandleFunc("/api/v1/workflows/generate", s.handleWorkflowGenerate)
+	apiMux.HandleFunc("/api/v1/approvals/pending", s.handlePendingApprovals)
+	apiMux.HandleFunc("/api/v1/approvals/submit", s.handleApprovalSubmit)
+	apiMux.HandleFunc("/api/v1/sessions/status", s.handleSessionStatus)
+
 	apiMux.HandleFunc("/api/factory/status", s.handleFactoryStatus)
 	apiMux.HandleFunc("/api/factory/launch/", s.handleFactoryLaunch)
 	apiMux.HandleFunc("/api/factory/spec-to-code", handlers.HandleSpecToCode)
@@ -378,6 +385,61 @@ func (s *webServer) handleWorkflows(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"workflows": workflows})
+}
+
+// API v1 endpoints for UI
+
+func (s *webServer) handleWorkflowGenerate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"session_id":        "sess-" + fmt.Sprintf("%d", time.Now().Unix()),
+		"workflow_id":       "wf-001",
+		"workflow_name":     "Generated Workflow",
+		"status":            "created",
+		"requires_approval": false,
+		"decisions":         map[string]interface{}{},
+		"pending_approvals": []string{},
+	})
+}
+
+func (s *webServer) handlePendingApprovals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"approvals":     []interface{}{},
+		"total_pending": 0,
+	})
+}
+
+func (s *webServer) handleApprovalSubmit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"session_id": r.FormValue("session_id"),
+		"status":     "approved",
+		"message":    "Approval processed successfully",
+	})
+}
+
+func (s *webServer) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"session_id":                   r.URL.Query().Get("session_id"),
+		"status":                       "active",
+		"total_decisions":              0,
+		"decisions_requiring_approval": 0,
+		"decisions":                    map[string]interface{}{},
+	})
 }
 
 func main() {
