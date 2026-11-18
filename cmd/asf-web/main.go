@@ -68,6 +68,23 @@ func newWebServer(workingDir string) (*webServer, error) {
 	}, nil
 }
 
+// corsMiddleware adds CORS headers to all responses
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *webServer) routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -134,7 +151,8 @@ func (s *webServer) routes() http.Handler {
 	// Apply guard to API routes
 	mux.Handle("/api/", webguard.Guard(apiMux, "/api/"))
 
-	return mux
+	// Apply CORS middleware to all routes
+	return corsMiddleware(mux)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
