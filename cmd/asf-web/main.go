@@ -41,6 +41,26 @@ type webServer struct {
 	factoryDef *factorydef.FactoryDefinition
 	harness    *harness.CompleteHarness
 	specs      *spec.SpecEngine
+	workflows  map[string]*WorkflowSession // Store active workflows
+	approvals  map[string]*PendingApproval // Store pending approvals
+}
+
+type WorkflowSession struct {
+	ID          string
+	Title       string
+	Description string
+	Decisions   []map[string]interface{}
+	Status      string
+	CreatedAt   time.Time
+}
+
+type PendingApproval struct {
+	ID         string
+	SessionID  string
+	AgentRole  string
+	Decision   string
+	Confidence float64
+	Status     string // pending, approved, rejected
 }
 
 func newWebServer(workingDir string) (*webServer, error) {
@@ -65,6 +85,8 @@ func newWebServer(workingDir string) (*webServer, error) {
 		factoryDef: factoryDef,
 		harness:    harness.NewCompleteHarness(workingDir),
 		specs:      spec.NewSpecEngine(filepath.Join(workingDir, "specs")),
+		workflows:  make(map[string]*WorkflowSession),
+		approvals:  make(map[string]*PendingApproval),
 	}, nil
 }
 
@@ -430,14 +452,49 @@ func (s *webServer) handleWorkflowGenerate(w http.ResponseWriter, r *http.Reques
 	// Generate real workflow decisions based on issue content
 	decisions := s.generateAgentDecisions(req.IssueTitle, req.IssueDescription)
 
+	// Create workflow session
+	sessionID := "sess-" + fmt.Sprintf("%d", time.Now().Unix())
+	workflowID := "wf-" + fmt.Sprintf("%x", time.Now().UnixNano())
+
+	session := &WorkflowSession{
+		ID:          sessionID,
+		Title:       req.IssueTitle,
+		Description: req.IssueDescription,
+		Decisions:   decisions,
+		Status:      "active",
+		CreatedAt:   time.Now(),
+	}
+
+	// Store workflow session
+	s.workflows[sessionID] = session
+
+	// Create approvals for decisions with confidence < 0.9 (need approval)
+	pendingApprovals := []string{}
+	for _, dec := range decisions {
+		confidence := dec["confidence"].(float64)
+		if confidence < 0.9 {
+			approvalID := fmt.Sprintf("app-%x", time.Now().UnixNano())
+			approval := &PendingApproval{
+				ID:         approvalID,
+				SessionID:  sessionID,
+				AgentRole:  dec["agent_role"].(string),
+				Decision:   dec["decision"].(string),
+				Confidence: confidence,
+				Status:     "pending",
+			}
+			s.approvals[approvalID] = approval
+			pendingApprovals = append(pendingApprovals, approvalID)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"session_id":        "sess-" + fmt.Sprintf("%d", time.Now().Unix()),
-		"workflow_id":       "wf-" + fmt.Sprintf("%x", time.Now().UnixNano()),
+		"session_id":        sessionID,
+		"workflow_id":       workflowID,
 		"workflow_name":     "Workflow: " + req.IssueTitle,
 		"status":            "created",
-		"requires_approval": false,
+		"requires_approval": len(pendingApprovals) > 0,
 		"decisions":         decisions,
-		"pending_approvals": []string{},
+		"pending_approvals": pendingApprovals,
 	})
 }
 
@@ -584,9 +641,31 @@ func (s *webServer) handlePendingApprovals(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+
+	// Collect pending approvals
+	var pendingList []*PendingApproval
+	for _, approval := range s.approvals {
+		if approval.Status == "pending" {
+			pendingList = append(pendingList, approval)
+		}
+	}
+
+	// Convert to response format
+	approvals := make([]map[string]interface{}, 0)
+	for _, app := range pendingList {
+		approvals = append(approvals, map[string]interface{}{
+			"id":         app.ID,
+			"session_id": app.SessionID,
+			"agent_role": app.AgentRole,
+			"decision":   app.Decision,
+			"confidence": app.Confidence,
+			"status":     app.Status,
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"approvals":     []interface{}{},
-		"total_pending": 0,
+		"approvals":     approvals,
+		"total_pending": len(approvals),
 	})
 }
 
@@ -595,10 +674,41 @@ func (s *webServer) handleApprovalSubmit(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+
+	var req struct {
+		ApprovalID string `json:"approval_id"`
+		Approved   bool   `json:"approved"`
+		Comments   string `json:"comments"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	approval, exists := s.approvals[req.ApprovalID]
+	if !exists {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval not found"})
+		return
+	}
+
+	// Update approval status
+	if req.Approved {
+		approval.Status = "approved"
+	} else {
+		approval.Status = "rejected"
+	}
+
+	// Get associated workflow
+	workflow, workflowExists := s.workflows[approval.SessionID]
+	if workflowExists && req.Approved {
+		workflow.Status = "approved"
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"session_id": r.FormValue("session_id"),
-		"status":     "approved",
-		"message":    "Approval processed successfully",
+		"approval_id": req.ApprovalID,
+		"status":      approval.Status,
+		"message":     "Approval processed successfully",
+		"session_id":  approval.SessionID,
 	})
 }
 
@@ -607,12 +717,41 @@ func (s *webServer) handleSessionStatus(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_id required"})
+		return
+	}
+
+	session, exists := s.workflows[sessionID]
+	if !exists {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+
+	// Count approvals for this session
+	approvalsForSession := 0
+	pendingForSession := 0
+	for _, approval := range s.approvals {
+		if approval.SessionID == sessionID {
+			approvalsForSession++
+			if approval.Status == "pending" {
+				pendingForSession++
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"session_id":                   r.URL.Query().Get("session_id"),
-		"status":                       "active",
-		"total_decisions":              0,
-		"decisions_requiring_approval": 0,
-		"decisions":                    map[string]interface{}{},
+		"session_id":                   sessionID,
+		"status":                       session.Status,
+		"issue_title":                  session.Title,
+		"issue_description":            session.Description,
+		"total_decisions":              len(session.Decisions),
+		"decisions_requiring_approval": approvalsForSession,
+		"pending_approvals":            pendingForSession,
+		"created_at":                   session.CreatedAt.Format(time.RFC3339),
+		"decisions":                    session.Decisions,
 	})
 }
 
