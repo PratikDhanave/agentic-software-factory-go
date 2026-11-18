@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,22 +38,31 @@ func NewPolicyEngine(logger Logger) *PolicyEngine {
 }
 
 func (pe *PolicyEngine) AddPolicy(p *entities.Policy) {
+	pe.rateLimitMu.Lock()
 	pe.policies = append(pe.policies, p)
 	sort.Slice(pe.policies, func(i, j int) bool {
 		return pe.policies[i].Priority > pe.policies[j].Priority
 	})
+	pe.rateLimitMu.Unlock()
 	pe.logger.Debug("policy added", "policy_id", p.ID, "policy_name", p.Name)
 }
 
 func (pe *PolicyEngine) SetRateLimitConfig(metric string, config *entities.RateLimitConfig) {
+	pe.rateLimitMu.Lock()
 	pe.rateLimitConfigs[metric] = config
+	pe.rateLimitMu.Unlock()
 	pe.logger.Debug("rate limit config set", "metric", metric, "max_count", config.MaxCount)
 }
 
 func (pe *PolicyEngine) Evaluate(req *PolicyEvaluationRequest) (*entities.PolicyEvaluationResult, error) {
-	if !req.SecurityContext.PrincipalType.IsValid() {
+	if req == nil || req.SecurityContext == nil || !req.SecurityContext.PrincipalType.IsValid() {
 		return nil, fmt.Errorf("invalid principal type")
 	}
+
+	pe.rateLimitMu.RLock()
+	policiesSnapshot := make([]*entities.Policy, len(pe.policies))
+	copy(policiesSnapshot, pe.policies)
+	pe.rateLimitMu.RUnlock()
 
 	type policyMatch struct {
 		policy   *entities.Policy
@@ -64,7 +74,7 @@ func (pe *PolicyEngine) Evaluate(req *PolicyEvaluationRequest) (*entities.Policy
 	allowals := []policyMatch{}
 	requireApprovals := []policyMatch{}
 
-	for _, policy := range pe.policies {
+	for _, policy := range policiesSnapshot {
 		if !policy.Active {
 			continue
 		}
@@ -290,12 +300,17 @@ func (pe *PolicyEngine) evaluateRateCondition(cond *entities.Condition) bool {
 }
 
 func (pe *PolicyEngine) evaluateAttributeCondition(cond *entities.Condition, req *PolicyEvaluationRequest) bool {
-	if value, ok := req.Attributes[cond.Type]; ok {
+	attrKey := cond.Type
+	if metaKey, ok := cond.Meta["attribute"].(string); ok && metaKey != "" {
+		attrKey = metaKey
+	}
+	if value, ok := req.Attributes[attrKey]; ok {
 		switch cond.Operator {
 		case "equals":
 			return value == cond.Value
 		case "contains":
-			return false
+			valStr, ok := value.(string)
+			return ok && strings.Contains(valStr, cond.Value)
 		default:
 			return false
 		}
@@ -315,14 +330,14 @@ func (pe *PolicyEngine) requiresApproval(stmt *entities.Statement, req *PolicyEv
 }
 
 func (pe *PolicyEngine) checkRateLimit(principalID string) *entities.PolicyEvaluationResult {
+	pe.rateLimitMu.Lock()
 	config, exists := pe.rateLimitConfigs["default"]
 	if !exists {
+		pe.rateLimitMu.Unlock()
 		return nil
 	}
 
 	key := principalID + ":default"
-
-	pe.rateLimitMu.Lock()
 	state, exists := pe.rateLimits[key]
 
 	if !exists || state.IsExpired() {
@@ -331,12 +346,13 @@ func (pe *PolicyEngine) checkRateLimit(principalID string) *entities.PolicyEvalu
 	}
 
 	count := state.Increment()
+	maxCount := config.MaxCount
 	pe.rateLimitMu.Unlock()
 
-	if count > config.MaxCount {
+	if count > maxCount {
 		result := entities.NewPolicyEvaluationResult(
 			entities.DecisionRateLimited,
-			fmt.Sprintf("rate limit exceeded: %d/%d", count-1, config.MaxCount),
+			fmt.Sprintf("rate limit exceeded: %d/%d", count-1, maxCount),
 		)
 		return result
 	}

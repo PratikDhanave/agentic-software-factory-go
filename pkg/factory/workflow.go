@@ -8,6 +8,7 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/analysis"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/codegen"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/docs"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/llm"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/review"
 )
 
@@ -30,12 +31,19 @@ type WorkflowResult struct {
 }
 
 func NewWorkflowEngine(ollamaURL, model string) *WorkflowEngine {
+	return NewWorkflowEngineWithClient(llm.NewOllamaClient(ollamaURL, model))
+}
+
+func NewWorkflowEngineWithClient(client llm.Client) *WorkflowEngine {
+	if client == nil {
+		client = llm.NewDeterministicClient()
+	}
 	return &WorkflowEngine{
-		codeGen:     codegen.NewCodeGenerator(ollamaURL, model),
-		reviewer:    review.NewCodeReviewer(ollamaURL, model),
-		bugDetector: analysis.NewBugDetector(ollamaURL, model),
-		docGen:      docs.NewDocGenerator(ollamaURL, model),
-		executor:    agents.NewToolExecutor(ollamaURL, model),
+		codeGen:     codegen.NewCodeGeneratorWithClient(client),
+		reviewer:    review.NewCodeReviewerWithClient(client),
+		bugDetector: analysis.NewBugDetectorWithClient(client),
+		docGen:      docs.NewDocGeneratorWithClient(client),
+		executor:    agents.NewToolExecutorWithClient(client),
 	}
 }
 

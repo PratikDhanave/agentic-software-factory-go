@@ -22,7 +22,14 @@ var ConnectionMachine = state.NewMachine("integration-connection", ConnDisabled,
 	ConnOffline:   {ConnConnected, ConnDisabled},
 	ConnConnected: {ConnDegraded, ConnOffline, ConnDisabled},
 	ConnDegraded:  {ConnConnected, ConnOffline, ConnDisabled},
-})
+}).WithCategory("infrastructure").
+	WithDescription("External SCM/chat/tracker integration health lifecycle (GitHub, Slack, Linear, Jira).").
+	WithStateDescriptions(map[state.State]string{
+		ConnDisabled:  "Adapter disabled in factory configuration.",
+		ConnOffline:   "Adapter enabled; awaiting handshake or unreachable.",
+		ConnConnected: "Healthy authenticated connection.",
+		ConnDegraded:  "Authenticated, but recent webhook/API calls experienced errors.",
+	})
 
 // Platform represents a constrained string type for known platforms.
 type Platform string

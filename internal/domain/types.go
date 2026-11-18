@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,29 +26,29 @@ type AgentMetric struct {
 
 // LearnedPattern represents discovered patterns for self-improvement
 type LearnedPattern struct {
-	ID               uuid.UUID
-	AgentRole        string
-	PatternType      string
-	IssueType        string
+	ID                 uuid.UUID
+	AgentRole          string
+	PatternType        string
+	IssueType          string
 	PatternDescription string
-	SuccessRate      float64
-	TimesApplied     int
-	ConfidenceBase   float64
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	SuccessRate        float64
+	TimesApplied       int
+	ConfidenceBase     float64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // ConfidenceCalibration tracks how well agent confidence scores match reality
 type ConfidenceCalibration struct {
-	ID             uuid.UUID
-	AgentRole      string
-	ConfidenceBin  string
-	Calibration    float64
-	SampleCount    int
-	ActualRate     float64
-	PredictedRate  float64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID            uuid.UUID
+	AgentRole     string
+	ConfidenceBin string
+	Calibration   float64
+	SampleCount   int
+	ActualRate    float64
+	PredictedRate float64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // AgentSpecialization tracks what each agent is best at
@@ -68,31 +69,33 @@ type AgentDecision struct {
 	ID               uuid.UUID
 	ExecutionID      uuid.UUID
 	AgentRole        string
+	IssueType        string
+	IssueNumber      int
 	Decision         string
 	Reasoning        string
 	Confidence       float64
 	Alternatives     []string
 	RequiresApproval bool
-	ApprovalStatus   string // pending, approved, rejected
+	ApprovalStatus   string // pending, approved, rejected, correct, incorrect
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
 
 // Approval represents a human approval decision
 type Approval struct {
-	ID                 uuid.UUID
-	ExecutionID        uuid.UUID
-	DecisionID         uuid.UUID
-	AgentRole          string
-	Status             string
-	ApproverID         string
-	ApprovalComments   string
-	ApprovalTimestamp  time.Time
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                uuid.UUID
+	ExecutionID       uuid.UUID
+	DecisionID        uuid.UUID
+	AgentRole         string
+	Status            string
+	ApproverID        string
+	ApprovalComments  string
+	ApprovalTimestamp time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
-// WorkflowExecution represents a workflow run
+// WorkflowExecution represents a learning-tracked workflow run
 type WorkflowExecution struct {
 	ID           uuid.UUID
 	DefinitionID uuid.UUID
@@ -100,6 +103,7 @@ type WorkflowExecution struct {
 	IssueBody    string
 	TriggerType  string
 	TriggerID    string
+	PRURL        string
 	Status       string
 	Decisions    []*AgentDecision
 	Approvals    []*Approval
@@ -107,27 +111,33 @@ type WorkflowExecution struct {
 	UpdatedAt    time.Time
 }
 
-// WorkflowRepository interface for persistence
-type WorkflowRepository interface {
-	SaveMetric(ctx interface{}, metric *AgentMetric) error
-	SavePattern(ctx interface{}, pattern *LearnedPattern) error
-	SaveCalibration(ctx interface{}, cal *ConfidenceCalibration) error
-	SaveSpecialization(ctx interface{}, spec *AgentSpecialization) error
+// LearningRepository persists agent decisions, human approvals, confidence
+// calibrations, and discovered patterns in SQLite.
+type LearningRepository interface {
+	SaveDecision(ctx context.Context, decision *AgentDecision) error
+	SaveApproval(ctx context.Context, approval *Approval) error
+	SaveMetric(ctx context.Context, metric *AgentMetric) error
+	SavePattern(ctx context.Context, pattern *LearnedPattern) error
+	SaveCalibration(ctx context.Context, cal *ConfidenceCalibration) error
+	SaveSpecialization(ctx context.Context, spec *AgentSpecialization) error
 
-	GetRecentDecisions(ctx interface{}, agentRole string, limit int) ([]*AgentDecision, error)
-	GetDecision(ctx interface{}, id uuid.UUID) (*AgentDecision, error)
-	GetExecution(ctx interface{}, id string) (*WorkflowExecution, error)
-	GetDecisionsByAgentAndType(ctx interface{}, agent, issueType string, limit int) ([]*AgentDecision, error)
+	GetRecentDecisions(ctx context.Context, agentRole string, limit int) ([]*AgentDecision, error)
+	GetDecision(ctx context.Context, id uuid.UUID) (*AgentDecision, error)
+	GetExecution(ctx context.Context, id string) (*WorkflowExecution, error)
+	GetDecisionsByAgentAndType(ctx context.Context, agent, issueType string, limit int) ([]*AgentDecision, error)
 
-	FindPatterns(ctx interface{}, agent, issueType string) ([]*LearnedPattern, error)
-	GetCalibration(ctx interface{}, agent string, confidence float64) (*ConfidenceCalibration, error)
-	GetTopPatterns(ctx interface{}, limit int) ([]*LearnedPattern, error)
+	FindPatterns(ctx context.Context, agent, issueType string) ([]*LearnedPattern, error)
+	GetCalibration(ctx context.Context, agent string, confidence float64) (*ConfidenceCalibration, error)
+	GetTopPatterns(ctx context.Context, limit int) ([]*LearnedPattern, error)
 
-	CountRecentDecisions(ctx interface{}, agent string, limit int) (int, error)
-	MarkDecisionCorrect(ctx interface{}, id uuid.UUID, correct bool) error
-	FindExecutionByPRURL(ctx interface{}, url string) (*WorkflowExecution, error)
-	RecordMetric(ctx interface{}, metric *AgentMetric) error
+	CountRecentDecisions(ctx context.Context, agent string, limit int) (int, error)
+	MarkDecisionCorrect(ctx context.Context, id uuid.UUID, correct bool) error
+	FindExecutionByPRURL(ctx context.Context, url string) (*WorkflowExecution, error)
+	RecordMetric(ctx context.Context, metric *AgentMetric) error
 
-	FindDecisionsForIssue(ctx interface{}, issueNumber int) ([]*AgentDecision, error)
-	MarkExecutionSuccessful(ctx interface{}, id uuid.UUID, successful bool) error
+	FindDecisionsForIssue(ctx context.Context, issueNumber int) ([]*AgentDecision, error)
+	MarkExecutionSuccessful(ctx context.Context, id uuid.UUID, successful bool) error
 }
+
+// WorkflowRepository aliases LearningRepository for backward compatibility with SelfImprovingService.
+type WorkflowRepository = LearningRepository

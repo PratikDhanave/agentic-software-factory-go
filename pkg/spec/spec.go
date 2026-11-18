@@ -142,9 +142,16 @@ func (e *SpecEngine) ValidateSpec(spec *Specification) []string {
 		errors = append(errors, "intent.goal is required")
 	}
 
-	// Check for circular dependencies in steps
+	// Check for missing and circular dependencies in steps
 	stepMap := make(map[string]*Step)
 	for i := range spec.Steps {
+		if spec.Steps[i].ID == "" {
+			errors = append(errors, fmt.Sprintf("step %d is missing an ID", i+1))
+			continue
+		}
+		if _, exists := stepMap[spec.Steps[i].ID]; exists {
+			errors = append(errors, fmt.Sprintf("duplicate step ID: %s", spec.Steps[i].ID))
+		}
 		stepMap[spec.Steps[i].ID] = &spec.Steps[i]
 	}
 
@@ -152,6 +159,33 @@ func (e *SpecEngine) ValidateSpec(spec *Specification) []string {
 		for _, dep := range step.DependsOn {
 			if _, ok := stepMap[dep]; !ok {
 				errors = append(errors, fmt.Sprintf("step %s depends on non-existent step %s", step.ID, dep))
+			}
+		}
+	}
+
+	// Detect cycles using 3-color DFS (0=unvisited, 1=visiting, 2=visited)
+	state := make(map[string]int, len(stepMap))
+	var hasCycle func(id string) bool
+	hasCycle = func(id string) bool {
+		state[id] = 1
+		if s, ok := stepMap[id]; ok {
+			for _, dep := range s.DependsOn {
+				if state[dep] == 1 {
+					return true
+				}
+				if state[dep] == 0 && hasCycle(dep) {
+					return true
+				}
+			}
+		}
+		state[id] = 2
+		return false
+	}
+	for _, step := range spec.Steps {
+		if step.ID != "" && state[step.ID] == 0 {
+			if hasCycle(step.ID) {
+				errors = append(errors, fmt.Sprintf("circular dependency detected involving step %s", step.ID))
+				break
 			}
 		}
 	}
@@ -206,12 +240,12 @@ func (e *SpecEngine) GeneratePrompt(spec *Specification) string {
 
 	if len(spec.Steps) > 0 {
 		sb.WriteString("## Execution Plan\n")
-		for _, step := range spec.Steps {
+		for i, step := range spec.Steps {
 			deps := ""
 			if len(step.DependsOn) > 0 {
 				deps = fmt.Sprintf(" [depends on: %s]", strings.Join(step.DependsOn, ", "))
 			}
-			sb.WriteString(fmt.Sprintf("%d. **%s**%s\n", len(spec.Steps), step.Name, deps))
+			sb.WriteString(fmt.Sprintf("%d. **%s**%s\n", i+1, step.Name, deps))
 			sb.WriteString(fmt.Sprintf("   %s\n", step.Description))
 			if step.Tool != "" {
 				sb.WriteString(fmt.Sprintf("   Tool: %s\n", step.Tool))

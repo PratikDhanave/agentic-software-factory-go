@@ -4,12 +4,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
+
+	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/eval"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/workspace"
 )
+
+// SevenLayerMachine aliases factory.SevenLayerMachine as the single source of truth.
+var SevenLayerMachine = factory.SevenLayerMachine
 
 type AgentRequest struct {
 	AgentID string `json:"agentId"`
@@ -19,6 +34,8 @@ type AgentRequest struct {
 type AgentResult struct {
 	ID               string   `json:"id"`
 	GeneratedCode    string   `json:"generatedCode"`
+	WorkspaceDir     string   `json:"workspaceDir,omitempty"`
+	FilesWritten     []string `json:"filesWritten,omitempty"`
 	Score            float64  `json:"score"`
 	TestsPassed      int      `json:"testsPassed"`
 	AcceptanceMet    bool     `json:"acceptanceMet"`
@@ -36,84 +53,20 @@ type SSEMessage struct {
 }
 
 var (
-	mu              sync.RWMutex
-	executionStore  = make(map[string]*AgentResult)
+	mu               sync.RWMutex
+	executionStore   = make(map[string]*AgentResult)
 	executionHistory []AgentResult
-	learnedPatterns = make(map[string]int)
+	learnedPatterns  = make(map[string]int)
 )
 
-// SevenLayerAgent executes the 7-layer pipeline
-type SevenLayerAgent struct {
-	spec    string
-	sendSSE func(SSEMessage)
-}
-
-// Layer 1: Factories-as-Code - Parse specification
-func (a *SevenLayerAgent) Layer1Parse() error {
-	a.sendSSE(SSEMessage{Status: "layer-1", Progress: 15, Message: "Layer 1: Parsing specification"})
-	time.Sleep(300 * time.Millisecond)
-	return nil
-}
-
-// Layer 2: Data & Context - Load context and rules
-func (a *SevenLayerAgent) Layer2Context() error {
-	a.sendSSE(SSEMessage{Status: "layer-2", Progress: 28, Message: "Layer 2: Loading context"})
-	time.Sleep(300 * time.Millisecond)
-	return nil
-}
-
-// Layer 3: Compute - Provision resources
-func (a *SevenLayerAgent) Layer3Compute() error {
-	a.sendSSE(SSEMessage{Status: "layer-3", Progress: 40, Message: "Layer 3: Computing resources"})
-	time.Sleep(300 * time.Millisecond)
-	return nil
-}
-
-// Layer 4: Inference - Generate code
-func (a *SevenLayerAgent) Layer4Generate() (string, error) {
-	a.sendSSE(SSEMessage{Status: "layer-4", Progress: 55, Message: "Layer 4: Generating code"})
-	time.Sleep(1000 * time.Millisecond)
-	return generateCode(a.spec), nil
-}
-
-// Layer 5: Improvement - Score and evaluate
-func (a *SevenLayerAgent) Layer5Score(code string) (float64, []string) {
-	a.sendSSE(SSEMessage{Status: "layer-5", Progress: 68, Message: "Layer 5: Scoring"})
-	time.Sleep(300 * time.Millisecond)
-	score := scoreCode(code)
-	violations := checkSafety(code)
-	return score, violations
-}
-
-// Layer 6: Orchestration - Coordinate workflow
-func (a *SevenLayerAgent) Layer6Orchestrate() error {
-	a.sendSSE(SSEMessage{Status: "layer-6", Progress: 80, Message: "Layer 6: Orchestrating"})
-	time.Sleep(300 * time.Millisecond)
-	return nil
-}
-
-// Layer 7: Access - Return result
-func (a *SevenLayerAgent) Layer7Return(code string, score float64, violations []string) *AgentResult {
-	a.sendSSE(SSEMessage{Status: "layer-7", Progress: 92, Message: "Layer 7: Returning result"})
-	time.Sleep(300 * time.Millisecond)
-
-	tests := int(score / 10)
-	if tests > 10 {
-		tests = 10
-	}
-
-	return &AgentResult{
-		ID:               uuid.New().String(),
-		GeneratedCode:    code,
-		Score:            score,
-		TestsPassed:      tests,
-		AcceptanceMet:    score >= 75,
-		SafetyViolations: violations,
-		CreatedAt:        time.Now().Format(time.RFC3339),
-	}
-}
-
-// HandleRunAgent executes 7-layer pipeline via HTTP
+// HandleRunAgent executes a real 7-layer Factory Stack pipeline over SSE:
+//  1. Layer 1 (Factories-as-Code): Parse LLD YAML into a Specification
+//  2. Layer 2 (Data & Context): Load repository ADRs & context via ContextEngine
+//  3. Layer 3 (Compute): Provision an isolated Go module workspace (.asf/workspaces/)
+//  4. Layer 4 (Inference): Synthesize multi-file Go code & tests via LLMGateway
+//  5. Layer 5 (Improvement): Run real `go build`, `go test -v`, `go vet` & LLM-as-a-Judge
+//  6. Layer 6 (Orchestration): Self-heal on any verification error & persist telemetry
+//  7. Layer 7 (Access): Stream verified source artifact and scorecard
 func HandleRunAgent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -125,20 +78,28 @@ func HandleRunAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-
-	if req.LLDYaml == "" {
+	if strings.TrimSpace(req.LLDYaml) == "" {
 		http.Error(w, "lldYaml required", http.StatusBadRequest)
 		return
 	}
 
-	execID := uuid.New().String()
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	execID := "7layer-" + uuid.New().String()[:8]
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	flusher := w.(http.Flusher)
+	curLayer := SevenLayerMachine.Initial()
 	sendSSE := func(msg SSEMessage) {
+		if msg.Status != "" {
+			_ = SevenLayerMachine.Transition(&curLayer, state.State(msg.Status))
+		}
 		if msg.ExecutionID == "" {
 			msg.ExecutionID = execID
 		}
@@ -147,60 +108,136 @@ func HandleRunAgent(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	sendSSE(SSEMessage{Status: "start", Progress: 5, Message: "Starting 7-layer agent"})
-
-	agent := &SevenLayerAgent{spec: req.LLDYaml, sendSSE: sendSSE}
-
-	// Execute 7 layers
-	if err := agent.Layer1Parse(); err != nil {
-		sendSSE(SSEMessage{Status: "error", Error: err.Error()})
-		return
+	ctx := r.Context()
+	workDir := "."
+	if activeContainer != nil && activeContainer.WorkingDir != "" {
+		workDir = activeContainer.WorkingDir
 	}
 
-	if err := agent.Layer2Context(); err != nil {
-		sendSSE(SSEMessage{Status: "error", Error: err.Error()})
-		return
+	// Layer 1: Parse LLD YAML into a Specification
+	sendSSE(SSEMessage{Status: "layer-1", Progress: 14, Message: "Layer 1 (Factories-as-Code): Parsing LLD YAML specification..."})
+	parsedSpec := parseLLDToSpec(req.LLDYaml, execID)
+
+	// Layer 2: Load Project Context
+	sendSSE(SSEMessage{Status: "layer-2", Progress: 28, Message: "Layer 2 (Data & Context): Loading ADRs and codebase context..."})
+	ctxItems, _ := asfContext.NewContextEngine(workDir).LoadContext(ctx)
+	ctxStr := asfContext.FormatForAgent(ctxItems)
+	if len(ctxStr) > 16000 {
+		ctxStr = ctxStr[:16000]
 	}
 
-	if err := agent.Layer3Compute(); err != nil {
-		sendSSE(SSEMessage{Status: "error", Error: err.Error()})
-		return
-	}
-
-	code, err := agent.Layer4Generate()
+	// Layer 3: Provision Isolated Workspace
+	sendSSE(SSEMessage{Status: "layer-3", Progress: 42, Message: "Layer 3 (Compute): Provisioning isolated Go module sandbox..."})
+	wsMgr := workspace.NewWorkspaceManager(workDir)
+	ws, err := wsMgr.CreateModuleWorkspace(execID, "asf/sevenlayer/"+execID)
 	if err != nil {
 		sendSSE(SSEMessage{Status: "error", Error: err.Error()})
 		return
 	}
 
-	score, violations := agent.Layer5Score(code)
+	// Layer 4: Synthesize Code & Unit Tests via LLMGateway
+	sendSSE(SSEMessage{Status: "layer-4", Progress: 60, Message: "Layer 4 (Inference): Synthesizing Go implementation & unit tests..."})
+	specPrompt := spec.NewSpecEngine("").GeneratePrompt(parsedSpec) +
+		"\n\nEmit fenced ```go path=service.go and ```go path=service_test.go blocks.\n\n## Context\n" + ctxStr
 
-	if err := agent.Layer6Orchestrate(); err != nil {
+	var rawOutput string
+	if activeContainer != nil && activeContainer.PromptClient != nil {
+		rawOutput, err = activeContainer.PromptClient.Generate(ctx, specPrompt)
+		if err != nil {
+			sendSSE(SSEMessage{Status: "error", Error: err.Error()})
+			return
+		}
+	} else {
+		sendSSE(SSEMessage{Status: "error", Error: "factory container not initialized"})
+		return
+	}
+
+	artifacts := harness.ParseArtifacts(rawOutput)
+	if _, err := ws.ApplyArtifacts(artifacts); err != nil {
 		sendSSE(SSEMessage{Status: "error", Error: err.Error()})
 		return
 	}
 
-	result := agent.Layer7Return(code, score, violations)
+	// Layer 5: Real Verification (`go build`, `go test -v`, `go vet`) & Judge Scoring
+	sendSSE(SSEMessage{Status: "layer-5", Progress: 76, Message: "Layer 5 (Improvement): Running go build, go test -v, go vet & Judge..."})
+	verifier := verify.NewVerificationEngine(ws.Dir)
+	verRes, _ := verifier.RunVerificationForSpec(ctx, "", parsedSpec)
 
-	// Track execution and patterns
+	// Layer 6: Self-Heal if verification failed on attempt 1
+	sendSSE(SSEMessage{Status: "layer-6", Progress: 88, Message: "Layer 6 (Orchestration): Verifying invariants & recording state..."})
+	if verRes != nil && !verRes.Success && activeContainer != nil && activeContainer.PromptClient != nil {
+		fixPrompt := verify.GenerateFixPrompt(verRes, specPrompt)
+		if fixedOut, fixErr := activeContainer.PromptClient.Generate(ctx, fixPrompt); fixErr == nil {
+			if fixedArts := harness.ParseArtifacts(fixedOut); len(fixedArts) > 0 {
+				_, _ = ws.ApplyArtifacts(fixedArts)
+				rawOutput = fixedOut
+				verRes, _ = verifier.RunVerificationForSpec(ctx, "", parsedSpec)
+			}
+		}
+	}
+
+	score := 85.0
+	if activeContainer != nil && activeContainer.PromptClient != nil {
+		judge := eval.NewEvaluationEngine(activeContainer.PromptClient)
+		if verdict, jErr := judge.EvaluateCode(ctx, specPrompt, rawOutput, "", eval.DefaultEvaluationCriteria()); jErr == nil {
+			score = verdict.Score * 100
+		}
+	}
+
+	var combinedSource strings.Builder
+	for _, f := range ws.FilesWritten {
+		combinedSource.WriteString("// === File: " + f + " ===\n")
+		if b, readErr := os.ReadFile(filepath.Join(ws.Dir, f)); readErr == nil {
+			combinedSource.Write(b)
+			combinedSource.WriteString("\n\n")
+		}
+	}
+
+	violations := []string{}
+	testsPassed := 0
+	if verRes != nil {
+		testsPassed = strings.Count(verRes.TestOutput, "--- PASS:")
+		for _, e := range verRes.Errors {
+			violations = append(violations, fmt.Sprintf("[%s] %s", e.Type, e.Message))
+		}
+		if !verRes.Success && score > 60 {
+			score = 55
+		}
+	}
+
+	// Layer 7: Publish Verified Result
+	sendSSE(SSEMessage{Status: "layer-7", Progress: 96, Message: "Layer 7 (Access): Packaging verified deliverable..."})
+	result := &AgentResult{
+		ID:               execID,
+		GeneratedCode:    strings.TrimSpace(combinedSource.String()),
+		WorkspaceDir:     ws.Dir,
+		FilesWritten:     ws.FilesWritten,
+		Score:            score,
+		TestsPassed:      testsPassed,
+		AcceptanceMet:    verRes != nil && verRes.Success && score >= 75,
+		SafetyViolations: violations,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+	}
+
 	mu.Lock()
 	executionStore[execID] = result
 	executionHistory = append(executionHistory, *result)
 	if len(executionHistory) > 100 {
 		executionHistory = executionHistory[1:]
 	}
-	trackPatterns(code, score)
+	if result.AcceptanceMet {
+		learnedPatterns["verified-go-module"]++
+	}
 	mu.Unlock()
 
 	sendSSE(SSEMessage{
 		Status:   "done",
 		Progress: 100,
-		Message:  "Complete",
+		Message:  "Verified 7-layer build & test pipeline complete",
 		Result:   result,
 	})
 }
 
-// HandleAgentStatus returns stored result
 func HandleAgentStatus(w http.ResponseWriter, r *http.Request) {
 	execID := r.URL.Query().Get("executionId")
 	if execID == "" {
@@ -211,39 +248,33 @@ func HandleAgentStatus(w http.ResponseWriter, r *http.Request) {
 	mu.RLock()
 	result, ok := executionStore[execID]
 	mu.RUnlock()
-
 	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	_ = json.NewEncoder(w).Encode(result)
 }
 
-// HandleMetrics returns learning data
 func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	mu.RLock()
 	defer mu.RUnlock()
 
 	avgScore := 0.0
-	if len(executionHistory) > 0 {
-		total := 0.0
-		for _, r := range executionHistory {
-			total += r.Score
-		}
-		avgScore = total / float64(len(executionHistory))
-	}
-
 	topScore := 0.0
-	for _, r := range executionHistory {
-		if r.Score > topScore {
-			topScore = r.Score
+	for _, run := range executionHistory {
+		avgScore += run.Score
+		if run.Score > topScore {
+			topScore = run.Score
 		}
+	}
+	if len(executionHistory) > 0 {
+		avgScore /= float64(len(executionHistory))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"total_runs":       len(executionHistory),
 		"average_score":    avgScore,
 		"top_score":        topScore,
@@ -251,191 +282,33 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// generateCode creates Go code from spec
-func generateCode(spec string) string {
-	name := "Service"
-	if strings.Contains(spec, "name:") {
-		for _, line := range strings.Split(spec, "\n") {
-			if strings.Contains(line, "name:") {
-				parts := strings.Split(line, ":")
-				if len(parts) > 1 {
-					name = strings.TrimSpace(parts[1])
-					break
-				}
-			}
-		}
+func parseLLDToSpec(rawYAML, fallbackID string) *spec.Specification {
+	var m map[string]interface{}
+	_ = yaml.Unmarshal([]byte(rawYAML), &m)
+
+	title, _ := m["name"].(string)
+	if title == "" {
+		title, _ = m["title"].(string)
+	}
+	if title == "" {
+		title = "GeneratedService"
+	}
+	desc, _ := m["description"].(string)
+	if desc == "" {
+		desc = title
 	}
 
-	return fmt.Sprintf(`package service
-
-import (
-	"fmt"
-	"sync"
-	"errors"
-)
-
-type %s struct {
-	mu    sync.RWMutex
-	store map[string]interface{}
-}
-
-func New() *%s {
-	return &%s{
-		store: make(map[string]interface{}),
-	}
-}
-
-func (s *%s) Create(id string, data interface{}) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if id == "" {
-		return errors.New("id required")
-	}
-	if _, exists := s.store[id]; exists {
-		return fmt.Errorf("id %%s exists", id)
-	}
-	s.store[id] = data
-	return nil
-}
-
-func (s *%s) Read(id string) (interface{}, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	data, exists := s.store[id]
-	if !exists {
-		return nil, fmt.Errorf("id %%s not found", id)
-	}
-	return data, nil
-}
-
-func (s *%s) Update(id string, data interface{}) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.store[id]; !exists {
-		return fmt.Errorf("id %%s not found", id)
-	}
-	s.store[id] = data
-	return nil
-}
-
-func (s *%s) Delete(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.store[id]; !exists {
-		return fmt.Errorf("id %%s not found", id)
-	}
-	delete(s.store, id)
-	return nil
-}
-
-func TestCreate(t *testing.T) {
-	s := New()
-	err := s.Create("id1", map[string]string{"val": "test"})
-	if err != nil {
-		t.Fatalf("error: %%v", err)
-	}
-	err = s.Create("id1", nil)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestRead(t *testing.T) {
-	s := New()
-	s.Create("id1", "data")
-	data, err := s.Read("id1")
-	if err != nil || data == nil {
-		t.Fatalf("error: %%v", err)
-	}
-	_, err = s.Read("missing")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestUpdate(t *testing.T) {
-	s := New()
-	s.Create("id1", "old")
-	err := s.Update("id1", "new")
-	if err != nil {
-		t.Fatalf("error: %%v", err)
-	}
-	err = s.Update("missing", "data")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestDelete(t *testing.T) {
-	s := New()
-	s.Create("id1", "data")
-	err := s.Delete("id1")
-	if err != nil {
-		t.Fatalf("error: %%v", err)
-	}
-	err = s.Delete("id1")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-`, name, name, name, name, name, name, name)
-}
-
-// scoreCode calculates 0-100 score
-func scoreCode(code string) float64 {
-	score := 0.0
-
-	if strings.Contains(code, "func Test") && strings.Contains(code, "*testing.T") {
-		score += 40
-	} else if strings.Contains(code, "func Test") {
-		score += 25
-	}
-
-	if strings.Count(code, "error") > 5 {
-		score += 30
-	} else if strings.Contains(code, "error") {
-		score += 15
-	}
-
-	if strings.Contains(code, "sync.RWMutex") && strings.Count(code, "defer") > 2 {
-		score += 20
-	} else if strings.Contains(code, "sync") {
-		score += 10
-	}
-
-	if len(code) > 1200 {
-		score += 10
-	}
-
-	return score
-}
-
-// checkSafety identifies safety violations
-func checkSafety(code string) []string {
-	violations := []string{}
-
-	if !strings.Contains(code, "error") {
-		violations = append(violations, "No error handling")
-	}
-
-	if !strings.Contains(code, "sync") && !strings.Contains(code, "mutex") {
-		violations = append(violations, "Not thread-safe")
-	}
-
-	return violations
-}
-
-// trackPatterns learns from successful code
-func trackPatterns(code string, score float64) {
-	if score >= 70 {
-		if strings.Contains(code, "sync.RWMutex") {
-			learnedPatterns["concurrent-safe"]++
-		}
-		if strings.Contains(code, "error") {
-			learnedPatterns["error-handling"]++
-		}
-		if strings.Contains(code, "func Test") {
-			learnedPatterns["tested"]++
-		}
+	return &spec.Specification{
+		ID:          fallbackID,
+		Version:     "1.0",
+		Title:       title,
+		Description: desc,
+		Intent: spec.Intent{
+			Goal:    desc,
+			Context: rawYAML,
+		},
+		Constraints: []spec.Constraint{
+			{ID: "c1", Type: "must_not", Description: "unsafe.Pointer"},
+		},
 	}
 }

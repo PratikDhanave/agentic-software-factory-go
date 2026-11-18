@@ -1,0 +1,23 @@
+id: "spec-ttl-lru-cache"
+version: "1.0"
+title: "Generic Thread-Safe TTL LRU Cache"
+description: "In-memory generic Go cache combining O(1) doubly-linked-list LRU eviction with per-entry TTL expiration"
+intent:
+  goal: "Provide a generic TTLCache[K comparable, V any] with bounded memory capacity and lazy TTL eviction"
+  context: "Caches specification lookups, prompt templates, and session metadata"
+  success_criteria:
+    - "O(1) Get and Set operations using container/list and map"
+    - "Evicts least-recently-used entry when capacity is reached"
+    - "Expires stale entries past TTL and passes go test -race"
+constraints:
+  - id: "no-unsafe"
+    type: "must_not"
+    description: "unsafe.Pointer"
+steps:
+  - id: "step-cache"
+    name: "Implement Generic TTLCache[K, V]"
+    description: "Combine sync.Mutex, container/list, and map[K]*list.Element"
+  - id: "step-tests"
+    name: "Verify LRU Eviction, TTL Expiry & Concurrency"
+    description: "Test promotion on Get, LRU eviction on Set, TTL expiration, and 64-goroutine access"
+    depends_on: ["step-cache"]

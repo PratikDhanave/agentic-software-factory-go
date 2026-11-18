@@ -57,9 +57,7 @@ func (u *ExecuteWorkflowUseCase) Execute(ctx context.Context,
 	// Step 2: Create execution instance
 	executionID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
 	execution := entities.NewWorkflowExecution(executionID, definitionID, triggerEvent)
-	now := time.Now()
-	execution.StartedAt = &now
-	execution.Status = entities.WorkflowExecRunning
+	_ = execution.TransitionTo(entities.WorkflowExecRunning)
 
 	// Step 3: Save execution (started)
 	err = u.workflowRepo.SaveExecution(ctx, execution)
@@ -77,7 +75,7 @@ func (u *ExecuteWorkflowUseCase) Execute(ctx context.Context,
 	dag, err := u.dagBuilder.Build(def)
 	if err != nil {
 		u.logger.Error("failed to build DAG", err, "definition_id", definitionID)
-		execution.Status = entities.WorkflowExecFailed
+		_ = execution.TransitionTo(entities.WorkflowExecFailed)
 		u.workflowRepo.UpdateExecutionStatus(ctx, executionID, entities.WorkflowExecFailed)
 		return nil, fmt.Errorf("failed to build DAG: %w", err)
 	}
@@ -92,10 +90,10 @@ func (u *ExecuteWorkflowUseCase) Execute(ctx context.Context,
 	err = u.dagExecutor.Execute(ctx, dag, execution)
 	if err != nil {
 		u.logger.Error("DAG execution failed", err, "execution_id", executionID)
-		execution.Status = entities.WorkflowExecFailed
+		_ = execution.TransitionTo(entities.WorkflowExecFailed)
 	} else {
 		u.logger.Info("DAG execution completed successfully", "execution_id", executionID)
-		execution.Status = entities.WorkflowExecCompleted
+		_ = execution.TransitionTo(entities.WorkflowExecCompleted)
 	}
 
 	// Step 6: Update execution status

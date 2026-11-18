@@ -16,19 +16,20 @@ type CoordinateWorkflowInput struct {
 }
 
 type CoordinateWorkflowOutput struct {
-	Session      *entities.CoordinationSession
-	Workflow     *entities.WorkflowDefinition
-	Decisions    map[string]*entities.Decision
+	Session          *entities.CoordinationSession
+	Workflow         *entities.WorkflowDefinition
+	Decisions        map[string]*entities.Decision
 	RequiresApproval bool
-	ApprovedBy   string
+	ApprovedBy       string
 }
 
 type CoordinateWorkflowUseCase struct {
-	workflowGenerator  *services.WorkflowGenerator
-	knowledgeService   *services.KnowledgeGraphService
-	agentRegistry      *services.AgentRegistry
-	workflowRepo       repositories.WorkflowRepository
-	logger             services.Logger
+	workflowGenerator *services.WorkflowGenerator
+	knowledgeService  *services.KnowledgeGraphService
+	agentRegistry     *services.AgentRegistry
+	workflowRepo      repositories.WorkflowRepository
+	sessionRepo       repositories.CoordinationSessionRepository
+	logger            services.Logger
 }
 
 func NewCoordinateWorkflowUseCase(
@@ -39,12 +40,17 @@ func NewCoordinateWorkflowUseCase(
 	logger services.Logger,
 ) *CoordinateWorkflowUseCase {
 	return &CoordinateWorkflowUseCase{
-		workflowGenerator:  workflowGenerator,
-		knowledgeService:   knowledgeService,
-		agentRegistry:      agentRegistry,
-		workflowRepo:       workflowRepo,
-		logger:             logger,
+		workflowGenerator: workflowGenerator,
+		knowledgeService:  knowledgeService,
+		agentRegistry:     agentRegistry,
+		workflowRepo:      workflowRepo,
+		logger:            logger,
 	}
+}
+
+func (uc *CoordinateWorkflowUseCase) WithSessionRepository(repo repositories.CoordinationSessionRepository) *CoordinateWorkflowUseCase {
+	uc.sessionRepo = repo
+	return uc
 }
 
 func (uc *CoordinateWorkflowUseCase) Execute(ctx context.Context, input *CoordinateWorkflowInput) (*CoordinateWorkflowOutput, error) {
@@ -70,13 +76,26 @@ func (uc *CoordinateWorkflowUseCase) Execute(ctx context.Context, input *Coordin
 	workflow := genResult.Workflow
 	decisions := genResult.Decisions
 
-	recordDecisions(uc.knowledgeService, decisions)
+	if workflow != nil && uc.workflowRepo != nil {
+		_ = uc.workflowRepo.SaveDefinition(ctx, workflow)
+		if session != nil {
+			session.WorkflowDefID = workflow.ID
+		}
+	}
+
+	if session != nil && uc.sessionRepo != nil {
+		_ = uc.sessionRepo.SaveSession(session)
+	}
+
+	if uc.knowledgeService != nil {
+		recordDecisions(uc.knowledgeService, decisions)
+	}
 
 	output := &CoordinateWorkflowOutput{
-		Session:            session,
-		Workflow:           workflow,
-		Decisions:          decisions,
-		RequiresApproval:   session.Status == entities.SessionWaitingApproval,
+		Session:          session,
+		Workflow:         workflow,
+		Decisions:        decisions,
+		RequiresApproval: session.Status == entities.SessionWaitingApproval,
 	}
 
 	uc.logger.Info("workflow coordination completed",
@@ -89,32 +108,23 @@ func (uc *CoordinateWorkflowUseCase) Execute(ctx context.Context, input *Coordin
 }
 
 func (uc *CoordinateWorkflowUseCase) ApproveAndProceed(ctx context.Context, sessionID string, approver string) error {
-	uc.logger.Info("workflow approval requested",
-		"session_id", sessionID,
-		"approver", approver,
-	)
-
-	session := &entities.CoordinationSession{
-		ID: sessionID,
+	if uc.sessionRepo != nil {
+		if err := uc.sessionRepo.ApproveSession(sessionID, approver); err != nil {
+			return err
+		}
 	}
-
-	session.Complete()
-
 	uc.logger.Info("workflow approved and ready for execution",
 		"session_id", sessionID,
 		"approver", approver,
 	)
-
 	return nil
 }
 
 func (uc *CoordinateWorkflowUseCase) GetCoordinationStats(ctx context.Context) map[string]interface{} {
-	stats := map[string]interface{}{
-		"agents_available":   len(uc.agentRegistry.GetAll()),
-		"knowledge_base":     uc.knowledgeService.GetStats(),
+	return map[string]interface{}{
+		"agents_available": len(uc.agentRegistry.GetAll()),
+		"knowledge_base":   uc.knowledgeService.GetStats(),
 	}
-
-	return stats
 }
 
 func recordDecisions(knowledgeService *services.KnowledgeGraphService, decisions map[string]*entities.Decision) {

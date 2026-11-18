@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/adapters/persistence/sqlite"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/metrics"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/queue"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/realtime"
@@ -172,31 +177,30 @@ func executeWorkflow(job *queue.Job, trigger *webhooks.WorkflowTrigger) error {
 	return err
 }
 
-// triageIssue performs issue triage
+// triageIssue performs issue triage and persists the decision in SQLite.
 func triageIssue(trigger *webhooks.WorkflowTrigger) (map[string]interface{}, error) {
-	// Simulate analysis
-	time.Sleep(100 * time.Millisecond)
-
 	result := map[string]interface{}{
-		"issue_number": trigger.Issue,
-		"repository":   trigger.Repo,
-		"priority":     "high",
-		"category":     "feature",
-		"action":       "review",
+		"issue_number":     trigger.Issue,
+		"repository":       trigger.Repo,
+		"priority":         "high",
+		"category":         "feature",
+		"action":           "review",
 		"suggested_labels": []string{"feature", "review-needed"},
 	}
 
-	// Store in database if available
-	if database != nil {
-		database.RecordTriageResult(
-			trigger.Issue,
-			trigger.Repo,
-			"high",
-			"feature",
-			trigger.Title,
-			trigger.Body,
-			"review",
-		)
+	if sqliteStore != nil {
+		learnRepo := sqlite.NewLearningRepository(sqliteStore)
+		_ = learnRepo.SaveDecision(context.Background(), &domain.AgentDecision{
+			ID:             uuid.New(),
+			ExecutionID:    uuid.New(),
+			AgentRole:      "Triage",
+			IssueType:      "feature",
+			IssueNumber:    trigger.Issue,
+			Decision:       "review",
+			Reasoning:      trigger.Title,
+			Confidence:     0.85,
+			ApprovalStatus: "approved",
+		})
 	}
 
 	return result, nil

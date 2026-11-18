@@ -94,9 +94,10 @@ func (h *CoordinationHandler) GenerateWorkflow(w http.ResponseWriter, r *http.Re
 }
 
 type ApprovalRequestResponse struct {
-	SessionID    string                     `json:"session_id"`
-	Approvals    []*services.InteractiveDecision `json:"approvals"`
-	TotalPending int                        `json:"total_pending"`
+	SessionID        string                          `json:"session_id"`
+	Approvals        []*services.InteractiveDecision `json:"approvals"`
+	PendingApprovals []*services.InteractiveDecision `json:"pending_approvals"`
+	TotalPending     int                             `json:"total_pending"`
 }
 
 func (h *CoordinationHandler) GetPendingApprovals(w http.ResponseWriter, r *http.Request) {
@@ -115,14 +116,16 @@ func (h *CoordinationHandler) GetPendingApprovals(w http.ResponseWriter, r *http
 	interactiveDecisions := []*services.InteractiveDecision{}
 	for _, approval := range approvals {
 		for agentRole, decision := range approval.Decisions {
-			if decision.Confidence < 0.7 {
+			if decision.NeedsApproval || decision.Confidence < 0.7 {
 				iDec := &services.InteractiveDecision{
 					SessionID:      approval.SessionID,
 					AgentRole:      agentRole,
 					CurrentChoice:  decision.Choice,
+					Reasoning:      decision.Reasoning,
 					Confidence:     decision.Confidence,
 					Options:        decision.Alternatives,
 					RequiresAction: true,
+					Status:         "pending_approval",
 				}
 				interactiveDecisions = append(interactiveDecisions, iDec)
 			}
@@ -130,8 +133,9 @@ func (h *CoordinationHandler) GetPendingApprovals(w http.ResponseWriter, r *http
 	}
 
 	resp := ApprovalRequestResponse{
-		Approvals:    interactiveDecisions,
-		TotalPending: len(interactiveDecisions),
+		Approvals:        interactiveDecisions,
+		PendingApprovals: interactiveDecisions,
+		TotalPending:     len(interactiveDecisions),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -211,7 +215,10 @@ func (h *CoordinationHandler) GetSessionStatus(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	sessionID := r.URL.Query().Get("session_id")
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		sessionID = r.URL.Query().Get("session_id")
+	}
 	if sessionID == "" {
 		http.Error(w, "session_id parameter required", http.StatusBadRequest)
 		return
@@ -227,16 +234,20 @@ func (h *CoordinationHandler) GetSessionStatus(w http.ResponseWriter, r *http.Re
 	summary, _ := h.interactiveHandler.ListDecisionsSummary(sessionID)
 
 	decisionsMap := map[string]interface{}{}
+	requiringApproval := 0
 	if summary != nil {
 		decisionsMap = summary
+		if count, ok := summary["decisions_requiring_approval"].(int); ok {
+			requiringApproval = count
+		}
 	}
 
 	resp := SessionStatusResponse{
-		SessionID:              session.ID,
-		Status:                 string(session.Status),
-		TotalDecisions:         len(session.Decisions),
-		DecisionsRequiringApproval: 0,
-		Decisions:              decisionsMap,
+		SessionID:                  session.ID,
+		Status:                     string(session.Status),
+		TotalDecisions:             len(session.Decisions),
+		DecisionsRequiringApproval: requiringApproval,
+		Decisions:                  decisionsMap,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -245,7 +256,9 @@ func (h *CoordinationHandler) GetSessionStatus(w http.ResponseWriter, r *http.Re
 
 func (h *CoordinationHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/workflows/generate", h.GenerateWorkflow)
+	mux.HandleFunc("/api/v1/workflows/coordinate", h.GenerateWorkflow)
 	mux.HandleFunc("/api/v1/approvals/pending", h.GetPendingApprovals)
 	mux.HandleFunc("/api/v1/approvals/submit", h.SubmitApproval)
 	mux.HandleFunc("/api/v1/sessions/status", h.GetSessionStatus)
+	mux.HandleFunc("GET /api/v1/workflows/sessions/{id}", h.GetSessionStatus)
 }

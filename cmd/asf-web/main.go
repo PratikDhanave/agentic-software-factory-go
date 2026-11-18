@@ -1,13 +1,12 @@
-// Command asf-web serves the factory HTTP API consumed by the Next.js
-// dashboard (web-ui/). Task lifecycle semantics come from factory.TaskMachine;
-// this server never hardcodes state names or terminality.
+// Command asf-web serves the unified Agentic Software Factory HTTP & SSE API
+// consumed by both the Next.js Control Plane (web-ui/) and the embedded single-binary UI.
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,82 +14,52 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
+
 	"github.com/PratikDhanave/agentic-software-factory-go/cmd/asf-web/handlers"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/application"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/application/usecases"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/bootstrap"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain/entities"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/stateregistry"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
-	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factorydef"
-	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/mcp"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
-	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/webguard"
 )
 
-// launchTaskTypes maps a dashboard launch action to the factory task type
-// that implements it today.
 var launchTaskTypes = map[string]string{
 	"review":   "review",
 	"bugfix":   "generate",
 	"feature":  "generate",
+	"generate": "generate",
+	"verify":   "verify",
 	"eval":     "evaluate",
+	"evaluate": "evaluate",
 	"refactor": "refactor",
 	"migrate":  "refactor",
 }
 
 type webServer struct {
-	factory    *factory.FactoryOrchestrator
-	factoryDef *factorydef.FactoryDefinition
-	harness    *harness.CompleteHarness
-	specs      *spec.SpecEngine
-	workflows  map[string]*WorkflowSession // Store active workflows
-	approvals  map[string]*PendingApproval // Store pending approvals
-}
-
-type WorkflowSession struct {
-	ID          string
-	Title       string
-	Description string
-	Decisions   []map[string]interface{}
-	Status      string
-	CreatedAt   time.Time
-}
-
-type PendingApproval struct {
-	ID         string
-	SessionID  string
-	AgentRole  string
-	Decision   string
-	Confidence float64
-	Status     string // pending, approved, rejected
+	container *bootstrap.Container
+	mcpServer *mcp.MCPServer
 }
 
 func newWebServer(workingDir string) (*webServer, error) {
-	fo, err := factory.NewFactoryOrchestrator(workingDir, 4)
+	c, err := bootstrap.NewContainer(workingDir)
 	if err != nil {
-		return nil, fmt.Errorf("creating factory: %w", err)
+		return nil, err
 	}
-	if err := fo.Start(context.Background()); err != nil {
-		return nil, fmt.Errorf("starting factory: %w", err)
-	}
-
-	var factoryDef *factorydef.FactoryDefinition
-	if path, err := factorydef.FindFactoryDefinition(workingDir); err == nil {
-		factoryDef, err = factorydef.LoadFactoryDefinition(path)
-		if err != nil {
-			log.Printf("Warning: failed to load factory definition: %v", err)
-		}
-	}
-
+	handlers.SetContainer(c)
 	return &webServer{
-		factory:    fo,
-		factoryDef: factoryDef,
-		harness:    harness.NewCompleteHarness(workingDir),
-		specs:      spec.NewSpecEngine(filepath.Join(workingDir, "specs")),
-		workflows:  make(map[string]*WorkflowSession),
-		approvals:  make(map[string]*PendingApproval),
+		container: c,
+		mcpServer: mcp.NewMCPServer(c.Factory, c.FactoryDef).WithStateMachines(stateregistry.All()),
 	}, nil
 }
 
-// corsMiddleware adds CORS headers to all responses
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -102,7 +71,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-
 		next.ServeHTTP(w, r)
 	})
 }
@@ -113,67 +81,87 @@ func (s *webServer) routes() http.Handler {
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static"))))
 	mux.Handle("/templates/", http.StripPrefix("/templates/", http.FileServer(http.Dir("./web/templates"))))
 
-	// Public endpoints (not guarded)
+	// Public health & webhook endpoints
 	mux.HandleFunc("/api/github/token", s.handleGitHubToken)
 	mux.HandleFunc("/api/mcp/info", handlers.HandleMCPInfo)
 	mux.HandleFunc("/api/mcp/rpc", handlers.HandleMCPServer)
 	mux.HandleFunc("/health", handlers.HandleHealth)
+	mux.HandleFunc("/webhooks/github", handlers.HandleGitHubWebhookIntegration)
 	mux.HandleFunc("/", s.handleRoot)
 
-	// Guarded API endpoints
+	// Guarded Control Plane API
 	apiMux := http.NewServeMux()
 
-	// Add v1 API endpoints for UI/Frontend
+	// System Overview & Phase Control
+	apiMux.HandleFunc("/api/system/overview", s.handleSystemOverview)
+	apiMux.HandleFunc("/api/system/phase", s.handleSystemPhase)
+	apiMux.HandleFunc("/api/system/metrics", handlers.HandleSystemMetrics)
+	apiMux.HandleFunc("/api/dashboard", handlers.HandleDashboard)
+	apiMux.HandleFunc("/api/state-machines", s.handleStateMachines)
+	apiMux.HandleFunc("/api/state-machines/validate", s.handleStateMachineValidate)
+
+	// Autonomous Software Factory Assembly Line (6-Stage End-to-End Pipeline)
+	apiMux.HandleFunc("/api/v1/factory/runs", s.handleFactoryRuns)
+	apiMux.HandleFunc("/api/v1/factory/runs/", s.handleFactoryRunByID)
+
+	// Multi-Agent Coordination, DAG Execution & Approvals Gate
 	apiMux.HandleFunc("/api/v1/workflows/generate", s.handleWorkflowGenerate)
+	apiMux.HandleFunc("/api/v1/workflows/coordinate", s.handleWorkflowGenerate)
+	apiMux.HandleFunc("/api/v1/workflows/execute", s.handleWorkflowExecute)
+	apiMux.HandleFunc("/api/v1/workflows/executions", s.handleListWorkflowExecutions)
+	apiMux.HandleFunc("/api/v1/sessions", s.handleListSessions)
+	apiMux.HandleFunc("/api/v1/sessions/status", s.handleSessionStatus)
 	apiMux.HandleFunc("/api/v1/approvals/pending", s.handlePendingApprovals)
 	apiMux.HandleFunc("/api/v1/approvals/submit", s.handleApprovalSubmit)
-	apiMux.HandleFunc("/api/v1/sessions/status", s.handleSessionStatus)
 
+	// Self-Improvement & Learning Simulator
+	apiMux.HandleFunc("/api/v1/metrics/self-improvement", s.handleSelfImprovementMetrics)
+	apiMux.HandleFunc("/api/metrics/self-improvement", s.handleSelfImprovementMetrics)
+	apiMux.HandleFunc("/api/v1/learning/simulate", s.handleLearningSimulate)
+	apiMux.HandleFunc("/api/v1/learning/learn", s.handleLearningTrigger)
+
+	// Factory Worker Pool, Isolated Workspace Tasks & Specs
 	apiMux.HandleFunc("/api/factory/status", s.handleFactoryStatus)
 	apiMux.HandleFunc("/api/factory/launch/", s.handleFactoryLaunch)
+	apiMux.HandleFunc("/api/factory/verify", s.handleFactoryVerify)
 	apiMux.HandleFunc("/api/factory/spec-to-code", handlers.HandleSpecToCode)
 	apiMux.HandleFunc("/api/factory/code-review", handlers.HandleCodeReview)
 	apiMux.HandleFunc("/api/factory/generate-code", handlers.HandleGenerateCode)
 	apiMux.HandleFunc("/api/factory/execute-task", handlers.HandleExecuteTask)
 	apiMux.HandleFunc("/api/factory/stream-task", handlers.HandleStreamTask)
 	apiMux.HandleFunc("/api/harness/status", s.handleHarnessStatus)
-	apiMux.HandleFunc("/api/specs", s.handleListSpecs)
+	apiMux.HandleFunc("/api/specs", s.handleSpecs)
+	apiMux.HandleFunc("/api/specs/", s.handleSpecByID)
 	apiMux.HandleFunc("/api/agents", s.handleListAgents)
+	apiMux.HandleFunc("/api/tasks", s.handleTask)
+	apiMux.HandleFunc("/api/tasks/", s.handleTask)
+	apiMux.HandleFunc("/api/workflows", s.handleWorkflows)
+	apiMux.HandleFunc("/api/workflows/", s.handleWorkflows)
+
+	// Legacy & Auxiliary Endpoints
 	apiMux.HandleFunc("/api/agents/run", handlers.HandleRunAgent)
 	apiMux.HandleFunc("/api/agents/status", handlers.HandleAgentStatus)
 	apiMux.HandleFunc("/api/agents/metrics", handlers.HandleMetrics)
+	apiMux.HandleFunc("/api/agents/llm", handlers.HandleLLMAgent)
 	apiMux.HandleFunc("/api/github/review", handlers.HandleGitHubReview)
 	apiMux.HandleFunc("/api/github/review/status", handlers.HandleReviewStatus)
 	apiMux.HandleFunc("/api/github/triage", handlers.HandleGitHubTriage)
 	apiMux.HandleFunc("/api/github/triage/status", handlers.HandleTriageStatus)
 	apiMux.HandleFunc("/api/mcp/task", handlers.HandleMCPTask)
 	apiMux.HandleFunc("/api/mcp/tools", handlers.HandleMCPTools)
-	apiMux.HandleFunc("/api/agents/llm", handlers.HandleLLMAgent)
-	apiMux.HandleFunc("/api/dashboard", handlers.HandleDashboard)
-	apiMux.HandleFunc("/api/system/metrics", handlers.HandleSystemMetrics)
-	apiMux.HandleFunc("/api/state-machines", s.handleStateMachines)
-	apiMux.HandleFunc("/api/tasks", s.handleTask)
-	apiMux.HandleFunc("/api/tasks/", s.handleTask)
-	apiMux.HandleFunc("/api/workflows", s.handleWorkflows)
-	apiMux.HandleFunc("/api/workflows/", s.handleWorkflows)
+	apiMux.Handle("/api/mcp/factory", s.mcpServer)
 	apiMux.HandleFunc("/api/db/stats", handlers.HandleDatabaseStats)
 	apiMux.HandleFunc("/api/db/health", handlers.HandleDatabaseHealth)
 	apiMux.HandleFunc("/api/db/workflows", handlers.HandleWorkflowHistory)
 	apiMux.HandleFunc("/api/db/workflow/details", handlers.HandleWorkflowDetails)
 	apiMux.HandleFunc("/api/db/search", handlers.HandleSearchWorkflows)
-
-	// Integration endpoints
-	mux.HandleFunc("/webhooks/github", handlers.HandleGitHubWebhookIntegration)
 	apiMux.HandleFunc("/api/stream", handlers.HandleRealtimeStream)
 	apiMux.HandleFunc("/api/metrics/detailed", handlers.HandleMetricsDetailed)
 	apiMux.HandleFunc("/api/jobs/status", handlers.HandleJobStatus)
 	apiMux.HandleFunc("/api/jobs/list", handlers.HandleJobsList)
 	apiMux.HandleFunc("/api/audit/log", handlers.HandleAuditLog)
 
-	// Apply guard to API routes
 	mux.Handle("/api/", webguard.Guard(apiMux, "/api/"))
-
-	// Apply CORS middleware to all routes
 	return corsMiddleware(mux)
 }
 
@@ -183,13 +171,632 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
-func (s *webServer) handleFactoryStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.factory.GetFactoryStatus())
+// handleSystemOverview serves a unified real-time telemetry snapshot for the Control Plane UI.
+func (s *webServer) handleSystemOverview(w http.ResponseWriter, r *http.Request) {
+	c := s.container
+	factoryStatus := c.Factory.GetFactoryStatus()
+	dbStats, _ := c.Store.Stats(r.Context())
+	specsMap, _ := c.SpecEngine.LoadAllSpecs()
+	pendingSessions, _ := c.SessionRepo.ListPendingApprovals()
+
+	pendingCount := 0
+	for _, sess := range pendingSessions {
+		for _, d := range sess.Decisions {
+			if d != nil && d.NeedsApproval {
+				pendingCount++
+			}
+		}
+	}
+
+	agents := make([]map[string]interface{}, 0)
+	for _, cap := range c.AgentRegistry.GetAll() {
+		agents = append(agents, map[string]interface{}{
+			"role":               cap.Role,
+			"title":              cap.Title,
+			"description":        cap.Description,
+			"capabilities":       cap.Capabilities,
+			"decision_authority": cap.DecisionAuthority,
+			"interaction_mode":   cap.InteractionMode,
+			"domains":            cap.KnowledgeDomains,
+		})
+	}
+	sort.Slice(agents, func(i, j int) bool {
+		return fmt.Sprint(agents[i]["role"]) < fmt.Sprint(agents[j]["role"])
+	})
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":            "healthy",
+		"uptime":            time.Since(c.StartedAt).Round(time.Second).String(),
+		"phase":             c.Phase(),
+		"llm_provider":      c.LLMGateway.ProviderName(),
+		"persistence":       "sqlite3-wal",
+		"db_path":           c.Store.Path(),
+		"specs_count":       len(specsMap),
+		"agents_count":      len(agents),
+		"agents":            agents,
+		"pending_approvals": pendingCount,
+		"factory":           factoryStatus,
+		"database":          dbStats,
+	})
 }
 
-// handleFactoryLaunch handles POST /api/factory/launch/{action}: it submits
-// a task of the mapped type and returns its ID so the client can follow the
-// task's state machine via /api/tasks/{id}.
+func (s *webServer) handleSystemPhase(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]string{"phase": s.container.Phase()})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		Phase string `json:"phase"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if err := s.container.SetPhase(req.Phase); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"phase":   s.container.Phase(),
+		"message": "Factory maturity phase updated to " + s.container.Phase(),
+	})
+}
+
+// handleWorkflowGenerate runs multi-agent coordination, persists session/workflow/decisions
+// to SQLite, evaluates phase-aware HITL policy, and optionally executes the DAG.
+func (s *webServer) handleWorkflowGenerate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	var req struct {
+		IssueTitle       string                 `json:"issue_title"`
+		IssueDescription string                 `json:"issue_description"`
+		TriggerType      string                 `json:"trigger_type"`
+		Classification   string                 `json:"classification"`
+		TriggerEvent     map[string]interface{} `json:"trigger_event"`
+		ApprovalRequired *bool                  `json:"approval_required"`
+		AutoExecute      *bool                  `json:"auto_execute"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request JSON"})
+		return
+	}
+
+	if req.TriggerEvent == nil {
+		req.TriggerEvent = map[string]interface{}{}
+	}
+	if req.IssueTitle != "" {
+		req.TriggerEvent["title"] = req.IssueTitle
+	}
+	if req.IssueDescription != "" {
+		req.TriggerEvent["description"] = req.IssueDescription
+	}
+	title, _ := req.TriggerEvent["title"].(string)
+	desc, _ := req.TriggerEvent["description"].(string)
+	if strings.TrimSpace(title) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "issue_title is required"})
+		return
+	}
+	if req.TriggerType == "" {
+		req.TriggerType = "issue"
+	}
+	if req.Classification == "" {
+		req.Classification = classifyIssueType(title + " " + desc)
+	}
+
+	c := s.container
+	phase := c.Phase()
+	forceApproval := phase == "crawl" || (req.ApprovalRequired != nil && *req.ApprovalRequired)
+
+	out, err := c.CoordinateUC.Execute(r.Context(), &usecases.CoordinateWorkflowInput{
+		TriggerEvent:     req.TriggerEvent,
+		TriggerType:      req.TriggerType,
+		Classification:   req.Classification,
+		ApprovalRequired: forceApproval,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	execUUID := uuid.New()
+	pendingIDs := make([]string, 0)
+	decisionsView := make([]map[string]interface{}, 0, len(out.Decisions))
+	anyNeedsApproval := false
+
+	roles := make([]string, 0, len(out.Decisions))
+	for role := range out.Decisions {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+
+	for _, role := range roles {
+		d := out.Decisions[role]
+		if d == nil {
+			continue
+		}
+		skip := !forceApproval && c.SelfImproving.ShouldSkipApproval(r.Context(), role, req.Classification, d.Confidence, phase)
+		d.NeedsApproval = !skip
+		if d.NeedsApproval {
+			anyNeedsApproval = true
+		}
+
+		decID := uuid.New()
+		approvalStatus := "approved"
+		if d.NeedsApproval {
+			approvalStatus = "pending"
+			pendingIDs = append(pendingIDs, out.Session.ID+":"+role)
+		}
+
+		agentDec := &domain.AgentDecision{
+			ID:               decID,
+			ExecutionID:      execUUID,
+			AgentRole:        role,
+			IssueType:        req.Classification,
+			Decision:         d.Choice,
+			Reasoning:        d.Reasoning,
+			Confidence:       d.Confidence,
+			Alternatives:     d.Alternatives,
+			RequiresApproval: d.NeedsApproval,
+			ApprovalStatus:   approvalStatus,
+			CreatedAt:        time.Now(),
+		}
+		_ = c.LearningRepo.SaveDecision(r.Context(), agentDec)
+		_ = c.SelfImproving.RecordDecision(r.Context(), agentDec, req.Classification)
+
+		decisionsView = append(decisionsView, map[string]interface{}{
+			"id":                out.Session.ID + ":" + role,
+			"decision_uuid":     decID.String(),
+			"agent_role":        role,
+			"decision":          d.Choice,
+			"choice":            d.Choice,
+			"reasoning":         d.Reasoning,
+			"confidence":        d.Confidence,
+			"alternatives":      d.Alternatives,
+			"needs_approval":    d.NeedsApproval,
+			"approval_status":   approvalStatus,
+		})
+	}
+
+	if anyNeedsApproval {
+		out.Session.RequestApproval()
+	} else {
+		out.Session.Status = entities.SessionExecuting
+	}
+	_ = c.SessionRepo.SaveSession(out.Session)
+
+	yamlBytes, _ := yaml.Marshal(out.Workflow)
+
+	var executionView interface{}
+	autoExec := req.AutoExecute == nil || *req.AutoExecute
+	if !anyNeedsApproval && autoExec && out.Workflow != nil {
+		if execRes, execErr := c.ExecuteWorkflowUC.Execute(r.Context(), out.Workflow.ID, req.TriggerEvent); execErr == nil {
+			out.Session.Complete()
+			_ = c.SessionRepo.SaveSession(out.Session)
+			executionView = execRes
+		}
+	}
+
+	// Build DAG preview levels for UI visualization
+	var dagLevels [][]string
+	if dag, dagErr := c.DAGBuilder.Build(out.Workflow); dagErr == nil {
+		dagLevels = dag.GetExecutionLevels()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"session_id":        out.Session.ID,
+		"workflow_id":       out.Workflow.ID,
+		"workflow_name":     out.Workflow.Name,
+		"status":            out.Session.Status,
+		"phase":             phase,
+		"classification":    req.Classification,
+		"requires_approval": anyNeedsApproval,
+		"decisions":         decisionsView,
+		"pending_approvals": pendingIDs,
+		"dag_levels":        dagLevels,
+		"jobs":              out.Workflow.JobsMap,
+		"workflow_yaml":     string(yamlBytes),
+		"execution":         executionView,
+	})
+}
+
+func (s *webServer) handleWorkflowExecute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		WorkflowID string                 `json:"workflow_id"`
+		SessionID  string                 `json:"session_id"`
+		Input      map[string]interface{} `json:"input"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	c := s.container
+	workflowID := req.WorkflowID
+	trigger := req.Input
+	if req.SessionID != "" {
+		if sess, err := c.SessionRepo.GetSession(req.SessionID); err == nil {
+			if workflowID == "" {
+				workflowID = sess.WorkflowDefID
+			}
+			if trigger == nil {
+				trigger = sess.TriggerEvent
+			}
+		}
+	}
+	if workflowID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "workflow_id or session_id is required"})
+		return
+	}
+
+	execRes, err := c.ExecuteWorkflowUC.Execute(r.Context(), workflowID, trigger)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if req.SessionID != "" {
+		_ = c.SessionRepo.UpdateSessionStatus(req.SessionID, entities.SessionCompleted)
+	}
+	writeJSON(w, http.StatusOK, execRes)
+}
+
+func (s *webServer) handleListWorkflowExecutions(w http.ResponseWriter, r *http.Request) {
+	execs, err := s.container.WorkflowRepo.ListExecutions(r.Context(), "", 25, 0)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"executions": execs})
+}
+
+func (s *webServer) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	sessions, err := s.container.SessionRepo.ListRecentSessions(25)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": sessions})
+}
+
+func (s *webServer) handlePendingApprovals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	sessions, err := s.container.SessionRepo.ListPendingApprovals()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	approvals := make([]map[string]interface{}, 0)
+	for _, sess := range sessions {
+		title, _ := sess.TriggerEvent["title"].(string)
+		roles := make([]string, 0, len(sess.Decisions))
+		for role := range sess.Decisions {
+			roles = append(roles, role)
+		}
+		sort.Strings(roles)
+
+		for _, role := range roles {
+			dec := sess.Decisions[role]
+			if dec == nil || !dec.NeedsApproval {
+				continue
+			}
+			approvals = append(approvals, map[string]interface{}{
+				"id":           sess.ID + ":" + role,
+				"session_id":   sess.ID,
+				"workflow_id":  sess.WorkflowDefID,
+				"issue_title":  title,
+				"agent_role":   role,
+				"decision":     dec.Choice,
+				"reasoning":    dec.Reasoning,
+				"confidence":   dec.Confidence,
+				"alternatives": dec.Alternatives,
+				"status":       "pending",
+				"created_at":   sess.CreatedAt.Format(time.RFC3339),
+			})
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"approvals":         approvals,
+		"pending_approvals": approvals,
+		"total_pending":     len(approvals),
+	})
+}
+
+func (s *webServer) handleApprovalSubmit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	var req struct {
+		ApprovalID string `json:"approval_id"`
+		SessionID  string `json:"session_id"`
+		Approver   string `json:"approver"`
+		Approved   bool   `json:"approved"`
+		Comments   string `json:"comments"`
+		Override   string `json:"override"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if req.Approver == "" {
+		req.Approver = "human-operator"
+	}
+
+	sessionID := req.SessionID
+	targetRole := ""
+	if strings.Contains(req.ApprovalID, ":") {
+		parts := strings.SplitN(req.ApprovalID, ":", 2)
+		sessionID = parts[0]
+		targetRole = parts[1]
+	} else if sessionID == "" {
+		sessionID = req.ApprovalID
+	}
+
+	c := s.container
+	sess, err := c.SessionRepo.GetSession(sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval session not found"})
+		return
+	}
+
+	if !req.Approved {
+		_ = c.SessionRepo.UpdateSessionStatus(sessionID, entities.SessionFailed)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"approval_id": req.ApprovalID,
+			"session_id":  sessionID,
+			"status":      "rejected",
+			"message":     "Decision rejected; workflow halted.",
+		})
+		return
+	}
+
+	stillPending := 0
+	for role, dec := range sess.Decisions {
+		if dec == nil {
+			continue
+		}
+		if targetRole == "" || role == targetRole {
+			dec.NeedsApproval = false
+			dec.Approver = req.Approver
+			if req.Override != "" {
+				dec.Choice = req.Override
+				dec.Reasoning = "Human override: " + req.Override
+			} else if req.Comments != "" {
+				dec.Reasoning = dec.Reasoning + " (Approved: " + req.Comments + ")"
+			}
+		}
+		if dec.NeedsApproval {
+			stillPending++
+		}
+	}
+
+	var execView interface{}
+	status := "approved_partial"
+	msg := fmt.Sprintf("Approved %s (%d remaining in session)", targetRole, stillPending)
+
+	if stillPending == 0 {
+		sess.Status = entities.SessionExecuting
+		_ = c.SessionRepo.SaveSession(sess)
+		// Also resume any paused Autonomous Factory Run tied to this session!
+		if resumedRun, resumeErr := c.Pipeline.ResumeBySessionID(r.Context(), sessionID, req.Approver, false); resumeErr == nil && resumedRun != nil {
+			execView = resumedRun
+			status = "approved"
+			msg = "All session gates approved — Factory Assembly Line resumed (" + resumedRun.ID + ")."
+		} else {
+			if sess.WorkflowDefID != "" {
+				if execRes, execErr := c.ExecuteWorkflowUC.Execute(r.Context(), sess.WorkflowDefID, sess.TriggerEvent); execErr == nil {
+					execView = execRes
+					sess.Complete()
+				}
+			} else {
+				sess.Complete()
+			}
+			status = "approved"
+			msg = "All session gates approved — workflow executed."
+		}
+	}
+	_ = c.SessionRepo.SaveSession(sess)
+
+	// Record positive learning signal
+	if recent, _ := c.LearningRepo.GetRecentDecisions(r.Context(), targetRole, 1); len(recent) > 0 {
+		_ = c.SelfImproving.RecordApproval(r.Context(), &domain.Approval{
+			ID:                uuid.New(),
+			DecisionID:        recent[0].ID,
+			AgentRole:         targetRole,
+			Status:            "approved",
+			ApproverID:        req.Approver,
+			ApprovalComments:  req.Comments,
+			ApprovalTimestamp: time.Now(),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"approval_id":       req.ApprovalID,
+		"session_id":        sessionID,
+		"status":            status,
+		"remaining_pending": stillPending,
+		"message":           msg,
+		"execution":         execView,
+	})
+}
+
+func (s *webServer) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_id required"})
+		return
+	}
+	sess, err := s.container.SessionRepo.GetSession(sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	pending := 0
+	for _, d := range sess.Decisions {
+		if d != nil && d.NeedsApproval {
+			pending++
+		}
+	}
+	title, _ := sess.TriggerEvent["title"].(string)
+	desc, _ := sess.TriggerEvent["description"].(string)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"session_id":                   sess.ID,
+		"workflow_id":                  sess.WorkflowDefID,
+		"status":                       sess.Status,
+		"issue_title":                  title,
+		"issue_description":            desc,
+		"total_decisions":              len(sess.Decisions),
+		"pending_approvals":            pending,
+		"decisions_requiring_approval": pending,
+		"created_at":                   sess.CreatedAt.Format(time.RFC3339),
+		"decisions":                    sess.Decisions,
+	})
+}
+
+func (s *webServer) handleSelfImprovementMetrics(w http.ResponseWriter, r *http.Request) {
+	c := s.container
+	m, err := c.SelfImproving.GetMetrics(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	dbStats, _ := c.Store.Stats(r.Context())
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"Agents":    m.Agents,
+		"Patterns":  m.Patterns,
+		"Timestamp": m.Timestamp,
+		"Phase":     c.Phase(),
+		"Database":  dbStats,
+	})
+}
+
+func (s *webServer) handleLearningSimulate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		Count int `json:"count"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Count <= 0 {
+		req.Count = 25
+	}
+	if req.Count > 200 {
+		req.Count = 200
+	}
+
+	c := s.container
+	agents := []string{"Architect", "Developer", "QA", "Security", "Performance"}
+	issueTypes := []struct {
+		kind      string
+		reasoning string
+	}{
+		{"auth", "OAuth2 PKCE login session and JWT token validation"},
+		{"security", "SQL injection and XSS vulnerability remediation"},
+		{"performance", "Query latency and worker queue throughput optimization"},
+		{"data", "SQLite WAL schema migration and transactional integrity"},
+	}
+
+	for i := 0; i < req.Count; i++ {
+		ag := agents[i%len(agents)]
+		it := issueTypes[(i+rand.Intn(len(issueTypes)))%len(issueTypes)]
+		conf := 0.82 + float64(i%17)*0.01
+		dec := &domain.AgentDecision{
+			ID:               uuid.New(),
+			ExecutionID:      uuid.New(),
+			AgentRole:        ag,
+			IssueType:        it.kind,
+			Decision:         fmt.Sprintf("Apply verified %s architecture pattern", it.kind),
+			Reasoning:        it.reasoning,
+			Confidence:       conf,
+			RequiresApproval: conf < 0.90,
+			ApprovalStatus:   "approved",
+			CreatedAt:        time.Now(),
+		}
+		_ = c.LearningRepo.SaveDecision(r.Context(), dec)
+		_ = c.SelfImproving.RecordDecision(r.Context(), dec, it.kind)
+		_ = c.SelfImproving.RecordApproval(r.Context(), &domain.Approval{
+			ID:                uuid.New(),
+			DecisionID:        dec.ID,
+			AgentRole:         ag,
+			Status:            "approved",
+			ApproverID:        "simulator",
+			ApprovalTimestamp: time.Now(),
+		})
+	}
+
+	for _, ag := range agents {
+		_ = c.SelfImproving.LearnPatterns(r.Context(), ag)
+	}
+	_ = c.SelfImproving.UpdateAgentSpecialization(r.Context())
+
+	metrics, _ := c.SelfImproving.GetMetrics(r.Context())
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"generated":      req.Count,
+		"patterns_found": len(metrics.Patterns),
+		"metrics":        metrics,
+	})
+}
+
+func (s *webServer) handleLearningTrigger(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	c := s.container
+	for _, ag := range []string{"Architect", "Developer", "QA", "Security", "Performance"} {
+		_ = c.SelfImproving.LearnPatterns(r.Context(), ag)
+	}
+	_ = c.SelfImproving.UpdateAgentSpecialization(r.Context())
+	metrics, _ := c.SelfImproving.GetMetrics(r.Context())
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":        true,
+		"patterns_found": len(metrics.Patterns),
+	})
+}
+
+func (s *webServer) handleFactoryStatus(w http.ResponseWriter, r *http.Request) {
+	status := s.container.Factory.GetFactoryStatus()
+	status["llm_provider"] = s.container.LLMGateway.ProviderName()
+	status["phase"] = s.container.Phase()
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *webServer) handleFactoryVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	res, err := s.container.Factory.Verifier().RunVerification(r.Context(), "")
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":      res != nil && res.Success,
+		"verification": res,
+		"error":        errMsg,
+	})
+}
+
 func (s *webServer) handleFactoryLaunch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -226,7 +833,7 @@ func (s *webServer) handleFactoryLaunch(w http.ResponseWriter, r *http.Request) 
 		Priority:   req.Priority,
 		Parameters: req.Parameters,
 	}
-	if err := s.factory.SubmitTask(task); err != nil {
+	if err := s.container.Factory.SubmitTask(task); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
@@ -239,16 +846,13 @@ func (s *webServer) handleFactoryLaunch(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// handleTask serves GET /api/tasks/{id} (snapshot) and
-// GET /api/tasks/{id}/stream (Server-Sent Events until a terminal state).
 func (s *webServer) handleTask(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/tasks"), "/")
 	taskID := strings.TrimSuffix(rest, "/stream")
 	streaming := strings.HasSuffix(rest, "/stream")
 
-	// GET /api/tasks with no id lists recent tasks, newest first.
 	if taskID == "" {
-		tasks := s.factory.RecentTasks(20)
+		tasks := s.container.Factory.RecentTasks(30)
 		views := make([]map[string]interface{}, 0, len(tasks))
 		for _, t := range tasks {
 			views = append(views, taskView(t))
@@ -258,7 +862,7 @@ func (s *webServer) handleTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !streaming {
-		task, ok := s.factory.GetTaskResult(taskID)
+		task, ok := s.container.Factory.GetTaskResult(taskID)
 		if !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
 			return
@@ -277,7 +881,7 @@ func (s *webServer) handleTask(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	var lastStatus state.State
@@ -286,7 +890,7 @@ func (s *webServer) handleTask(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			task, ok := s.factory.GetTaskResult(taskID)
+			task, ok := s.container.Factory.GetTaskResult(taskID)
 			if !ok {
 				continue
 			}
@@ -303,41 +907,251 @@ func (s *webServer) handleTask(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// taskView is the JSON shape served for a task.
 func taskView(task *factory.Task) map[string]interface{} {
 	return map[string]interface{}{
 		"id":           task.ID,
 		"type":         task.Type,
 		"spec_id":      task.SpecID,
+		"assigned_to":  task.AssignedTo,
 		"status":       task.Status,
 		"terminal":     factory.TaskMachine.IsTerminal(task.Status),
 		"retries":      task.Retries,
 		"result":       task.Result,
 		"error":        task.Error,
 		"created_at":   task.CreatedAt,
+		"started_at":   task.StartedAt,
 		"completed_at": task.CompletedAt,
 	}
 }
 
-// handleStateMachines exposes every state machine declaration so clients and
-// agents can introspect lifecycles instead of hardcoding them.
 func (s *webServer) handleStateMachines(w http.ResponseWriter, r *http.Request) {
-	machines := append(factory.Machines(), verify.PhaseMachine)
-	exports := make([]state.Export, 0, len(machines))
-	for _, m := range machines {
+	category := strings.TrimSpace(r.URL.Query().Get("category"))
+	all := stateregistry.All()
+	exports := make([]state.Export, 0, len(all))
+	for _, m := range all {
+		if category != "" && m.Category() != category {
+			continue
+		}
 		exports = append(exports, m.Export())
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"machines": exports})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"count":    len(exports),
+		"machines": exports,
+	})
+}
+
+func (s *webServer) handleStateMachineValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		Machine string `json:"machine"`
+		From    string `json:"from"`
+		To      string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request JSON"})
+		return
+	}
+	m, ok := stateregistry.ByName(req.Machine)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("state machine %q not found", req.Machine)})
+		return
+	}
+	insp := m.Inspect(state.State(req.From))
+	resp := map[string]interface{}{
+		"machine":    req.Machine,
+		"from":       req.From,
+		"inspection": insp,
+	}
+	if req.To != "" {
+		valErr := m.Validate(state.State(req.From), state.State(req.To))
+		resp["to"] = req.To
+		resp["allowed"] = valErr == nil
+		if valErr != nil {
+			resp["error"] = valErr.Error()
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *webServer) handleFactoryRuns(w http.ResponseWriter, r *http.Request) {
+	c := s.container
+	switch r.Method {
+	case http.MethodGet:
+		runs, err := c.FactoryRunRepo.List(r.Context(), 30)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"runs": runs})
+	case http.MethodPost:
+		var req struct {
+			Title         string   `json:"title"`
+			Description   string   `json:"description"`
+			SpecID        string   `json:"spec_id"`
+			Constraints   []string `json:"constraints"`
+			ForceApproval bool     `json:"force_approval"`
+			Sync          bool     `json:"sync"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request JSON"})
+			return
+		}
+		run, err := c.Pipeline.StartRun(r.Context(), application.FactoryRunInput{
+			Title:         req.Title,
+			Description:   req.Description,
+			SpecID:        req.SpecID,
+			Constraints:   req.Constraints,
+			ForceApproval: req.ForceApproval,
+			Phase:         c.Phase(),
+		}, req.Sync)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		code := http.StatusAccepted
+		if req.Sync {
+			code = http.StatusOK
+		}
+		writeJSON(w, code, run)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (s *webServer) handleFactoryRunByID(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/factory/runs/")
+	parts := strings.SplitN(rest, "/", 2)
+	runID := parts[0]
+	sub := ""
+	if len(parts) == 2 {
+		sub = parts[1]
+	}
+
+	c := s.container
+	switch sub {
+	case "":
+		rec, err := c.FactoryRunRepo.Get(r.Context(), runID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "factory run not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, rec)
+
+	case "approve":
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+			return
+		}
+		var req struct {
+			Approver string `json:"approver"`
+			Sync     bool   `json:"sync"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		rec, err := c.Pipeline.ResumeRun(r.Context(), runID, req.Approver, req.Sync)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, rec)
+
+	case "promote":
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+			return
+		}
+		var req struct {
+			TargetSubdir string `json:"target_subdir"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		rec, err := c.Pipeline.PromoteRun(r.Context(), runID, req.TargetSubdir)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, rec)
+
+	case "stream":
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		ch, unsub := c.Pipeline.Subscribe(runID)
+		defer unsub()
+
+		if current, err := c.FactoryRunRepo.Get(r.Context(), runID); err == nil {
+			b, _ := json.Marshal(current)
+			fmt.Fprintf(w, "data: %s\n\n", b)
+			flusher.Flush()
+			if current.Status == "completed" || current.Status == "failed" {
+				return
+			}
+		}
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case update := <-ch:
+				b, _ := json.Marshal(update)
+				fmt.Fprintf(w, "data: %s\n\n", b)
+				flusher.Flush()
+				if update.Status == "completed" || update.Status == "failed" || update.Status == "awaiting_approval" {
+					return
+				}
+			}
+		}
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func (s *webServer) handleHarnessStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ready"})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":       "ready",
+		"llm_provider": s.container.LLMGateway.ProviderName(),
+		"phase":        s.container.Phase(),
+	})
 }
 
-// handleListSpecs lists the specifications that can actually be launched —
-// the spec files on disk, not the factory-definition workflows.
-func (s *webServer) handleListSpecs(w http.ResponseWriter, r *http.Request) {
-	all, err := s.specs.LoadAllSpecs()
+func (s *webServer) handleSpecs(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var req spec.Specification
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid spec payload"})
+			return
+		}
+		if req.Version == "" {
+			req.Version = "1.0"
+		}
+		if errs := s.container.SpecEngine.ValidateSpec(&req); len(errs) > 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": strings.Join(errs, "; "), "validation_errors": errs})
+			return
+		}
+		specsDir := filepath.Join(s.container.WorkingDir, "specs")
+		_ = os.MkdirAll(specsDir, 0755)
+		yamlBytes, err := yaml.Marshal(&req)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		filename := sanitizeFilename(req.ID) + ".yaml"
+		if err := os.WriteFile(filepath.Join(specsDir, filename), yamlBytes, 0644); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]interface{}{"spec": req, "file": "specs/" + filename})
+		return
+	}
+
+	all, err := s.container.SpecEngine.LoadAllSpecs()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -353,410 +1167,135 @@ func (s *webServer) handleListSpecs(w http.ResponseWriter, r *http.Request) {
 
 	specs := make([]map[string]interface{}, 0, len(ids))
 	for _, id := range ids {
+		sp := all[id]
 		specs = append(specs, map[string]interface{}{
-			"id":      id,
-			"title":   all[id].Title,
-			"version": all[id].Version,
+			"id":          id,
+			"title":       sp.Title,
+			"version":     sp.Version,
+			"description": sp.Description,
+			"goal":        sp.Intent.Goal,
+			"steps_count": len(sp.Steps),
+			"constraints": sp.Constraints,
+			"steps":       sp.Steps,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"specs": specs})
 }
 
+func (s *webServer) handleSpecByID(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/specs/")
+	all, err := s.container.SpecEngine.LoadAllSpecs()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	sp, ok := all[id]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "spec not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"spec":   sp,
+		"prompt": s.container.SpecEngine.GeneratePrompt(sp),
+	})
+}
+
 func (s *webServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	agents := make([]map[string]interface{}, 0)
-	if s.factoryDef != nil {
-		for _, a := range s.factoryDef.Factory.Agents {
-			agents = append(agents, map[string]interface{}{
-				"id":           a.ID,
-				"role":         a.Role,
-				"capabilities": a.Capabilities,
-				"model":        a.Model,
-			})
-		}
+	for _, cap := range s.container.AgentRegistry.GetAll() {
+		agents = append(agents, map[string]interface{}{
+			"id":           string(cap.Role),
+			"role":         cap.Title,
+			"description":  cap.Description,
+			"capabilities": cap.Capabilities,
+			"authority":    cap.DecisionAuthority,
+			"mode":         cap.InteractionMode,
+			"model":        cap.LLMModel,
+		})
 	}
+	sort.Slice(agents, func(i, j int) bool {
+		return fmt.Sprint(agents[i]["id"]) < fmt.Sprint(agents[j]["id"])
+	})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": agents})
 }
 
 func (s *webServer) handleGitHubToken(w http.ResponseWriter, r *http.Request) {
-	// Never expose tokens over HTTP - this is a security vulnerability
-	// If token is needed, pass it securely via environment or authenticated endpoints
 	http.Error(w, "Forbidden: token endpoint disabled for security reasons", http.StatusForbidden)
 }
 
 func (s *webServer) handleRoot(w http.ResponseWriter, r *http.Request) {
+	outDir := filepath.Join(s.container.WorkingDir, "web-ui", "out")
+	if info, err := os.Stat(filepath.Join(outDir, "index.html")); err == nil && !info.IsDir() {
+		cleanReq := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
+		if cleanReq == "." || cleanReq == "" {
+			http.ServeFile(w, r, filepath.Join(outDir, "index.html"))
+			return
+		}
+		candidate := filepath.Join(outDir, cleanReq)
+		if rel, relErr := filepath.Rel(outDir, candidate); relErr == nil && !strings.HasPrefix(rel, "..") {
+			if st, stErr := os.Stat(candidate); stErr == nil && !st.IsDir() {
+				http.ServeFile(w, r, candidate)
+				return
+			}
+			if st, stErr := os.Stat(candidate + ".html"); stErr == nil && !st.IsDir() {
+				http.ServeFile(w, r, candidate+".html")
+				return
+			}
+		}
+		http.NotFound(w, r)
+		return
+	}
+
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, "./web/index.html")
+	http.ServeFile(w, r, filepath.Join(s.container.WorkingDir, "web", "index.html"))
 }
 
 func (s *webServer) handleWorkflows(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodPost {
-		var req struct {
-			Type        string `json:"type"`
-			Description string `json:"description"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
-			return
-		}
-
-		writeJSON(w, http.StatusAccepted, map[string]interface{}{
-			"id":          "workflow-" + time.Now().Format("20060102150405"),
-			"type":        req.Type,
-			"status":      "pending",
-			"description": req.Description,
-		})
-		return
-	}
-
-	tasks := s.factory.RecentTasks(20)
+	tasks := s.container.Factory.RecentTasks(25)
 	workflows := make([]map[string]interface{}, 0, len(tasks))
 	for _, t := range tasks {
-		workflows = append(workflows, map[string]interface{}{
-			"id":       t.ID,
-			"type":     t.Type,
-			"status":   t.Status,
-			"progress": 0,
-			"duration": 0,
-			"result":   t.Result,
-		})
+		workflows = append(workflows, taskView(t))
 	}
-
 	writeJSON(w, http.StatusOK, map[string]interface{}{"workflows": workflows})
 }
 
-// API v1 endpoints for UI
-
-func (s *webServer) handleWorkflowGenerate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
+func classifyIssueType(text string) string {
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "security") || strings.Contains(lower, "vulnerability") || strings.Contains(lower, "xss") || strings.Contains(lower, "injection"):
+		return "security-vulnerability"
+	case strings.Contains(lower, "auth") || strings.Contains(lower, "oauth") || strings.Contains(lower, "jwt") || strings.Contains(lower, "login"):
+		return "auth"
+	case strings.Contains(lower, "slow") || strings.Contains(lower, "latency") || strings.Contains(lower, "performance") || strings.Contains(lower, "memory"):
+		return "performance-issue"
+	case strings.Contains(lower, "bug") || strings.Contains(lower, "panic") || strings.Contains(lower, "crash") || strings.Contains(lower, "fix"):
+		return "bug"
+	default:
+		return "feature"
 	}
+}
 
-	var req struct {
-		IssueTitle       string `json:"issue_title"`
-		IssueDescription string `json:"issue_description"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
-		return
-	}
-
-	if req.IssueTitle == "" || req.IssueDescription == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "issue_title and issue_description required"})
-		return
-	}
-
-	// Generate real workflow decisions based on issue content
-	decisions := s.generateAgentDecisions(req.IssueTitle, req.IssueDescription)
-
-	// Create workflow session
-	sessionID := "sess-" + fmt.Sprintf("%d", time.Now().Unix())
-	workflowID := "wf-" + fmt.Sprintf("%x", time.Now().UnixNano())
-
-	session := &WorkflowSession{
-		ID:          sessionID,
-		Title:       req.IssueTitle,
-		Description: req.IssueDescription,
-		Decisions:   decisions,
-		Status:      "active",
-		CreatedAt:   time.Now(),
-	}
-
-	// Store workflow session
-	s.workflows[sessionID] = session
-
-	// Create approvals for decisions with confidence < 0.9 (need approval)
-	pendingApprovals := []string{}
-	for _, dec := range decisions {
-		confidence := dec["confidence"].(float64)
-		if confidence < 0.9 {
-			approvalID := fmt.Sprintf("app-%x", time.Now().UnixNano())
-			approval := &PendingApproval{
-				ID:         approvalID,
-				SessionID:  sessionID,
-				AgentRole:  dec["agent_role"].(string),
-				Decision:   dec["decision"].(string),
-				Confidence: confidence,
-				Status:     "pending",
-			}
-			s.approvals[approvalID] = approval
-			pendingApprovals = append(pendingApprovals, approvalID)
+func sanitizeFilename(id string) string {
+	var b strings.Builder
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
 		}
 	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"session_id":        sessionID,
-		"workflow_id":       workflowID,
-		"workflow_name":     "Workflow: " + req.IssueTitle,
-		"status":            "created",
-		"requires_approval": len(pendingApprovals) > 0,
-		"decisions":         decisions,
-		"pending_approvals": pendingApprovals,
-	})
-}
-
-// generateAgentDecisions creates workflow decisions based on issue analysis
-func (s *webServer) generateAgentDecisions(title, description string) []map[string]interface{} {
-	// Analyze issue to determine approach
-	isAuth := containsAny(description, []string{"auth", "oauth", "token", "login", "password"})
-	isPerf := containsAny(description, []string{"slow", "performance", "timeout", "latency", "speed"})
-	isData := containsAny(description, []string{"data", "database", "query", "migration", "schema"})
-	isSecurity := containsAny(description, []string{"security", "exploit", "vulnerability", "xss", "injection", "sql"})
-
-	decisions := []map[string]interface{}{}
-
-	// Architect decision
-	architectedDecision := generateArchitectDecision(title, description, isAuth, isPerf, isData, isSecurity)
-	decisions = append(decisions, architectedDecision)
-
-	// Developer decision
-	developerDecision := generateDeveloperDecision(title, description, isAuth, isPerf, isData, isSecurity)
-	decisions = append(decisions, developerDecision)
-
-	// QA decision
-	qaDecision := generateQADecision(title, description, isAuth, isPerf, isSecurity)
-	decisions = append(decisions, qaDecision)
-
-	// Security decision (if security-related)
-	if isSecurity {
-		securityDecision := map[string]interface{}{
-			"agent_role": "Security",
-			"decision":   "Conduct security audit and implement fixes",
-			"confidence": 0.94,
-			"reasoning":  "Security vulnerabilities require immediate audit and remediation to prevent exploitation.",
-		}
-		decisions = append(decisions, securityDecision)
+	if b.Len() == 0 {
+		return "spec"
 	}
-
-	// Performance decision (if perf-related)
-	if isPerf {
-		perfDecision := map[string]interface{}{
-			"agent_role": "Performance",
-			"decision":   "Profile and optimize bottleneck",
-			"confidence": 0.91,
-			"reasoning":  "Performance issues should be profiled to identify exact bottleneck before optimization.",
-		}
-		decisions = append(decisions, perfDecision)
-	}
-
-	return decisions
-}
-
-func generateArchitectDecision(title, desc string, isAuth, isPerf, isData, isSecurity bool) map[string]interface{} {
-	decision := "Review architecture and design solution"
-	confidence := 0.90
-	reasoning := "Requires architectural review to ensure solution aligns with system design."
-
-	if isAuth {
-		decision = "Implement secure authentication mechanism"
-		confidence = 0.95
-		reasoning = "Authentication issues require secure design patterns like token refresh, session management, or OAuth."
-	} else if isData {
-		decision = "Design database schema changes"
-		confidence = 0.92
-		reasoning = "Data-related issues need careful schema design to prevent data loss and maintain consistency."
-	} else if isSecurity {
-		decision = "Design security hardening approach"
-		confidence = 0.96
-		reasoning = "Security vulnerabilities need comprehensive architectural redesign to prevent future exploitation."
-	}
-
-	return map[string]interface{}{
-		"agent_role": "Architect",
-		"decision":   decision,
-		"confidence": confidence,
-		"reasoning":  reasoning,
-	}
-}
-
-func generateDeveloperDecision(title, desc string, isAuth, isPerf, isData, isSecurity bool) map[string]interface{} {
-	decision := "Implement fix and unit tests"
-	confidence := 0.88
-	reasoning := "Implementation should include comprehensive unit tests to prevent regression."
-
-	if isAuth {
-		decision = "Implement token refresh and retry logic"
-		confidence = 0.92
-		reasoning = "Common pattern for auth issues is implementing automatic token refresh with exponential backoff."
-	} else if isData {
-		decision = "Execute migration and backfill"
-		confidence = 0.89
-		reasoning = "Data migrations need careful execution with backfill for existing records."
-	} else if isPerf {
-		decision = "Optimize code hotspots"
-		confidence = 0.87
-		reasoning = "Performance optimization should target identified hotspots from profiling."
-	}
-
-	return map[string]interface{}{
-		"agent_role": "Developer",
-		"decision":   decision,
-		"confidence": confidence,
-		"reasoning":  reasoning,
-	}
-}
-
-func generateQADecision(title, desc string, isAuth, isPerf, isSecurity bool) map[string]interface{} {
-	decision := "Create comprehensive test suite"
-	confidence := 0.85
-	reasoning := "Quality assurance requires tests for happy path, edge cases, and error scenarios."
-
-	if isAuth {
-		decision = "Test auth flows including token refresh, expiry, and concurrent requests"
-		confidence = 0.90
-		reasoning = "Auth testing must cover token lifecycle, concurrent requests, and fallback scenarios."
-	} else if isSecurity {
-		decision = "Execute penetration testing and vulnerability assessment"
-		confidence = 0.93
-		reasoning = "Security vulnerabilities require comprehensive penetration testing to verify fix effectiveness."
-	} else if isPerf {
-		decision = "Execute performance benchmarks and load testing"
-		confidence = 0.89
-		reasoning = "Performance improvements need benchmarking to verify measurable gains under load."
-	}
-
-	return map[string]interface{}{
-		"agent_role": "QA",
-		"decision":   decision,
-		"confidence": confidence,
-		"reasoning":  reasoning,
-	}
-}
-
-func containsAny(text string, keywords []string) bool {
-	text = strings.ToLower(text)
-	for _, keyword := range keywords {
-		if strings.Contains(text, strings.ToLower(keyword)) {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *webServer) handlePendingApprovals(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-
-	// Collect pending approvals
-	var pendingList []*PendingApproval
-	for _, approval := range s.approvals {
-		if approval.Status == "pending" {
-			pendingList = append(pendingList, approval)
-		}
-	}
-
-	// Convert to response format
-	approvals := make([]map[string]interface{}, 0)
-	for _, app := range pendingList {
-		approvals = append(approvals, map[string]interface{}{
-			"id":         app.ID,
-			"session_id": app.SessionID,
-			"agent_role": app.AgentRole,
-			"decision":   app.Decision,
-			"confidence": app.Confidence,
-			"status":     app.Status,
-		})
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"approvals":     approvals,
-		"total_pending": len(approvals),
-	})
-}
-
-func (s *webServer) handleApprovalSubmit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-
-	var req struct {
-		ApprovalID string `json:"approval_id"`
-		Approved   bool   `json:"approved"`
-		Comments   string `json:"comments"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
-		return
-	}
-
-	approval, exists := s.approvals[req.ApprovalID]
-	if !exists {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval not found"})
-		return
-	}
-
-	// Update approval status
-	if req.Approved {
-		approval.Status = "approved"
-	} else {
-		approval.Status = "rejected"
-	}
-
-	// Get associated workflow
-	workflow, workflowExists := s.workflows[approval.SessionID]
-	if workflowExists && req.Approved {
-		workflow.Status = "approved"
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"approval_id": req.ApprovalID,
-		"status":      approval.Status,
-		"message":     "Approval processed successfully",
-		"session_id":  approval.SessionID,
-	})
-}
-
-func (s *webServer) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_id required"})
-		return
-	}
-
-	session, exists := s.workflows[sessionID]
-	if !exists {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-
-	// Count approvals for this session
-	approvalsForSession := 0
-	pendingForSession := 0
-	for _, approval := range s.approvals {
-		if approval.SessionID == sessionID {
-			approvalsForSession++
-			if approval.Status == "pending" {
-				pendingForSession++
-			}
-		}
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"session_id":                   sessionID,
-		"status":                       session.Status,
-		"issue_title":                  session.Title,
-		"issue_description":            session.Description,
-		"total_decisions":              len(session.Decisions),
-		"decisions_requiring_approval": approvalsForSession,
-		"pending_approvals":            pendingForSession,
-		"created_at":                   session.CreatedAt.Format(time.RFC3339),
-		"decisions":                    session.Decisions,
-	})
+	return b.String()
 }
 
 func main() {
 	addr := "localhost:8080"
+	if envAddr := os.Getenv("ASF_WEB_ADDR"); envAddr != "" {
+		addr = envAddr
+	}
 	if len(os.Args) > 1 {
 		addr = os.Args[1]
 	}
@@ -764,52 +1303,19 @@ func main() {
 	workingDir, _ := os.Getwd()
 	server, err := newWebServer(workingDir)
 	if err != nil {
-		log.Fatalf("Error creating web server: %v", err)
+		log.Fatalf("Error initializing Agentic Software Factory server: %v", err)
 	}
+	defer server.container.Close()
 
-	// Initialize integration (webhooks, queue, realtime, metrics, security)
 	if err := handlers.InitializeIntegration(); err != nil {
-		log.Fatalf("Error initializing integration: %v", err)
+		log.Printf("Warning: webhook queue init: %v", err)
 	}
 
-	// Initialize database (optional - can connect later)
-	dbDSN := os.Getenv("DATABASE_URL")
-	if dbDSN == "" {
-		// Try to construct from env vars
-		host := os.Getenv("DB_HOST")
-		if host != "" {
-			// Database env vars provided, initialize
-			if err := handlers.InitDatabase(""); err != nil {
-				log.Printf("Warning: Database initialization failed: %v", err)
-				log.Println("Continuing without database persistence...")
-			}
-		}
-	} else {
-		if err := handlers.InitDatabase(dbDSN); err != nil {
-			log.Printf("Warning: Database initialization failed: %v", err)
-			log.Println("Continuing without database persistence...")
-		}
-	}
-
-	fmt.Printf("ASF Web Server starting on %s\n", addr)
-	fmt.Printf("Dashboard: http://%s\n", addr)
-	fmt.Println("7-Layer Agent Endpoints:")
-	fmt.Println("  POST /api/agents/run              - Execute 7-layer agent (SSE)")
-	fmt.Println("  GET  /api/agents/status           - Get result")
-	fmt.Println("  GET  /api/agents/metrics          - Get metrics")
-	fmt.Println("GitHub Integration Endpoints:")
-	fmt.Println("  GET  /api/github/review           - Review PR (SSE streaming)")
-	fmt.Println("       ?owner=X&repo=Y&pr=N&token=Z")
-	fmt.Println("  GET  /api/github/review/status    - Get review result")
-	fmt.Println("GitHub Automatic Triage Endpoints:")
-	fmt.Println("  GET  /api/github/triage           - Triage issue (SSE streaming)")
-	fmt.Println("       ?owner=X&repo=Y&issue=N&token=Z")
-	fmt.Println("  GET  /api/github/triage/status    - Get triage result")
-	fmt.Println("Factory Endpoints:")
-	fmt.Println("  GET  /api/factory/status          - Factory status")
-	fmt.Println("  POST /api/factory/launch          - Launch task")
-	fmt.Println("  POST /api/factory/spec-to-code    - Generate code from spec")
-	fmt.Println("  POST /api/factory/code-review     - Review code")
+	fmt.Printf("Agentic Software Factory Control Plane listening on http://%s\n", addr)
+	fmt.Printf("  SQLite Store : %s\n", server.container.Store.Path())
+	fmt.Printf("  LLM Provider : %s\n", server.container.LLMGateway.ProviderName())
+	fmt.Printf("  Active Phase : %s\n", server.container.Phase())
+	fmt.Printf("  Next.js UI   : cd web-ui && npm run dev (http://127.0.0.1:3000)\n")
 
 	if err := http.ListenAndServe(addr, server.routes()); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)

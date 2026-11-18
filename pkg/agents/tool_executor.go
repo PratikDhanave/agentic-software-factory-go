@@ -12,8 +12,8 @@ import (
 )
 
 type ToolExecutor struct {
-	ollama *llm.OllamaClient
-	mcp    *access.MCPToolHandler
+	ollama        llm.Client
+	mcp           *access.MCPToolHandler
 	maxIterations int
 }
 
@@ -33,8 +33,12 @@ type ToolCall struct {
 }
 
 func NewToolExecutor(ollamaURL, model string) *ToolExecutor {
+	return NewToolExecutorWithClient(llm.NewOllamaClient(ollamaURL, model))
+}
+
+func NewToolExecutorWithClient(client llm.Client) *ToolExecutor {
 	return &ToolExecutor{
-		ollama:        llm.NewOllamaClient(ollamaURL, model),
+		ollama:        client,
 		mcp:           access.NewMCPToolHandler(""),
 		maxIterations: 5,
 	}

@@ -3,28 +3,56 @@ package entities
 import (
 	"fmt"
 	"time"
+
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
 )
 
+// JobMachine explicitly governs background & webhook jobs with bounded retries.
+var JobMachine = state.NewMachine("background-job", "pending", map[state.State][]state.State{
+	"pending": {"running", "failed"},
+	"running": {"success", "failed", "pending"},
+	"failed":  {"pending"},
+}).WithCategory("execution").
+	WithDescription("Webhook and background job lifecycle supporting bounded backoff retries.").
+	WithStateDescriptions(map[state.State]string{
+		"pending": "Enqueued and waiting for a worker slot.",
+		"running": "Actively executing job payload.",
+		"success": "Completed cleanly (terminal).",
+		"failed":  "Execution failed; transitions back to pending while retries remain.",
+	})
+
+// EntityMachines returns all explicit state machines declared in package entities.
+func EntityMachines() []*state.Machine {
+	return []*state.Machine{
+		CoordinationSessionMachine,
+		WorkflowDefinitionMachine,
+		WorkflowExecutionMachine,
+		DAGNodeMachine,
+		JobMachine,
+		WorkflowPipelineMachine,
+	}
+}
+
 type Job struct {
-	ID           string
-	Type         string
-	Status       string // pending, running, success, failed
-	Input        map[string]interface{}
-	Output       map[string]interface{}
-	Error        string
-	CreatedAt    time.Time
-	StartedAt    *time.Time
-	CompletedAt  *time.Time
-	Retries      int
-	MaxRetries   int
-	Priority     int
+	ID          string
+	Type        string
+	Status      string // pending, running, success, failed
+	Input       map[string]interface{}
+	Output      map[string]interface{}
+	Error       string
+	CreatedAt   time.Time
+	StartedAt   *time.Time
+	CompletedAt *time.Time
+	Retries     int
+	MaxRetries  int
+	Priority    int
 }
 
 func NewJob(id, jobType string, input map[string]interface{}) *Job {
 	return &Job{
 		ID:        id,
 		Type:      jobType,
-		Status:    "pending",
+		Status:    string(JobMachine.Initial()),
 		Input:     input,
 		CreatedAt: time.Now(),
 	}
@@ -46,7 +74,9 @@ func (j *Job) Start() error {
 	if !j.IsPending() {
 		return fmt.Errorf("cannot start non-pending job: status=%s", j.Status)
 	}
-	j.Status = "running"
+	if err := JobMachine.TransitionString(&j.Status, "running"); err != nil {
+		return err
+	}
 	now := time.Now()
 	j.StartedAt = &now
 	return nil
@@ -56,7 +86,9 @@ func (j *Job) Complete(output map[string]interface{}) error {
 	if !j.IsRunning() {
 		return fmt.Errorf("cannot complete non-running job: status=%s", j.Status)
 	}
-	j.Status = "success"
+	if err := JobMachine.TransitionString(&j.Status, "success"); err != nil {
+		return err
+	}
 	j.Output = output
 	now := time.Now()
 	j.CompletedAt = &now
@@ -67,7 +99,9 @@ func (j *Job) Fail(err error) error {
 	if j.IsCompleted() {
 		return fmt.Errorf("cannot fail completed job: status=%s", j.Status)
 	}
-	j.Status = "failed"
+	if trErr := JobMachine.TransitionString(&j.Status, "failed"); trErr != nil {
+		return trErr
+	}
 	if err != nil {
 		j.Error = err.Error()
 	}
@@ -84,8 +118,14 @@ func (j *Job) Retry() error {
 	if !j.CanRetry() {
 		return fmt.Errorf("cannot retry: exceeded max retries (%d)", j.MaxRetries)
 	}
+	if j.Status == "failed" || j.Status == "running" {
+		if err := JobMachine.TransitionString(&j.Status, "pending"); err != nil {
+			return err
+		}
+	} else {
+		j.Status = "pending"
+	}
 	j.Retries++
-	j.Status = "pending"
 	j.StartedAt = nil
 	j.CompletedAt = nil
 	j.Error = ""

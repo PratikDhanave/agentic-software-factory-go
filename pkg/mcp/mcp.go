@@ -9,15 +9,21 @@ import (
 
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factorydef"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/integration"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/queue"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/webguard"
 )
 
 // MCPServer exposes the factory as an MCP server
 type MCPServer struct {
-	factory    *factory.FactoryOrchestrator
-	factoryDef *factorydef.FactoryDefinition
-	mu         sync.RWMutex
-	server     *http.Server
+	factory       *factory.FactoryOrchestrator
+	factoryDef    *factorydef.FactoryDefinition
+	stateMachines []*state.Machine
+	mu            sync.RWMutex
+	server        *http.Server
 }
 
 // MCPRequest represents an incoming MCP request
@@ -44,11 +50,27 @@ type MCPError struct {
 }
 
 // NewMCPServer creates a new MCP server
-func NewMCPServer(factory *factory.FactoryOrchestrator, factoryDef *factorydef.FactoryDefinition) *MCPServer {
+func NewMCPServer(f *factory.FactoryOrchestrator, factoryDef *factorydef.FactoryDefinition) *MCPServer {
+	defaults := append([]*state.Machine{}, factory.Machines()...)
+	defaults = append(defaults,
+		queue.QueueJobMachine,
+		harness.HarnessMachine,
+		verify.PhaseMachine,
+		integration.ConnectionMachine,
+	)
 	return &MCPServer{
-		factory:    factory,
-		factoryDef: factoryDef,
+		factory:       f,
+		factoryDef:    factoryDef,
+		stateMachines: defaults,
 	}
+}
+
+// WithStateMachines overrides the catalog of explicit state machines exposed via MCP tools and resources.
+func (s *MCPServer) WithStateMachines(machines []*state.Machine) *MCPServer {
+	if len(machines) > 0 {
+		s.stateMachines = machines
+	}
+	return s
 }
 
 // Start serves MCP over HTTP. The endpoint can submit credential-spending
@@ -71,6 +93,11 @@ func (s *MCPServer) Stop(ctx context.Context) error {
 		return s.server.Shutdown(ctx)
 	}
 	return nil
+}
+
+// ServeHTTP allows mounting MCPServer directly onto an existing HTTP mux (e.g. asf-web).
+func (s *MCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.handleMCP(w, r)
 }
 
 // handleMCP handles incoming MCP requests
@@ -214,6 +241,41 @@ func (s *MCPServer) handleToolsList(params map[string]interface{}) (interface{},
 				"properties": map[string]interface{}{},
 			},
 		},
+		{
+			"name":        "list_state_machines",
+			"description": "List all explicit state machines governing the software factory (states, transitions, terminal states, descriptions, and Mermaid diagrams)",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"category": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional category filter: assembly, governance, orchestration, execution, verification, infrastructure",
+					},
+				},
+			},
+		},
+		{
+			"name":        "inspect_state_machine",
+			"description": "Inspect a state machine and optionally validate whether a state transition is legal",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"machine": map[string]interface{}{
+						"type":        "string",
+						"description": "State machine name (e.g. factory-assembly-line, coordination-session, task)",
+					},
+					"state": map[string]interface{}{
+						"type":        "string",
+						"description": "Current state to inspect",
+					},
+					"next_state": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional target state to validate transition from state -> next_state",
+					},
+				},
+				"required": []string{"machine", "state"},
+			},
+		},
 	}
 
 	return map[string]interface{}{
@@ -241,6 +303,10 @@ func (s *MCPServer) handleToolsCall(params map[string]interface{}) (interface{},
 		return s.listAgents()
 	case "run_verification":
 		return s.runVerification()
+	case "list_state_machines":
+		return s.listStateMachines(arguments)
+	case "inspect_state_machine":
+		return s.inspectStateMachine(arguments)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -309,20 +375,31 @@ func (s *MCPServer) getFactoryStatus() (interface{}, error) {
 	return status, nil
 }
 
-// listSpecs lists all specifications
+// listSpecs lists all specifications from SpecEngine (plus factory.yaml workflows if defined).
 func (s *MCPServer) listSpecs() (interface{}, error) {
-	if s.factoryDef == nil {
-		return map[string]interface{}{
-			"specs": []string{},
-		}, nil
+	specs := make([]map[string]interface{}, 0)
+
+	if s.factory != nil && s.factory.SpecEngine() != nil {
+		if loaded, err := s.factory.SpecEngine().LoadAllSpecs(); err == nil {
+			for id, sp := range loaded {
+				specs = append(specs, map[string]interface{}{
+					"id":          id,
+					"title":       sp.Title,
+					"version":     sp.Version,
+					"description": sp.Description,
+					"steps":       len(sp.Steps),
+				})
+			}
+		}
 	}
 
-	specs := make([]map[string]interface{}, 0)
-	for _, w := range s.factoryDef.Factory.Workflows {
-		specs = append(specs, map[string]interface{}{
-			"id":    w.ID,
-			"steps": len(w.Steps),
-		})
+	if len(specs) == 0 && s.factoryDef != nil {
+		for _, w := range s.factoryDef.Factory.Workflows {
+			specs = append(specs, map[string]interface{}{
+				"id":    w.ID,
+				"steps": len(w.Steps),
+			})
+		}
 	}
 
 	return map[string]interface{}{
@@ -330,15 +407,23 @@ func (s *MCPServer) listSpecs() (interface{}, error) {
 	}, nil
 }
 
-// getSpec gets a specific specification
+// getSpec gets a specific specification from SpecEngine (falling back to factory.yaml workflows).
 func (s *MCPServer) getSpec(args map[string]interface{}) (interface{}, error) {
 	specID, _ := args["spec_id"].(string)
 	if specID == "" {
 		return nil, fmt.Errorf("spec_id is required")
 	}
 
+	if s.factory != nil && s.factory.SpecEngine() != nil {
+		if loaded, err := s.factory.SpecEngine().LoadAllSpecs(); err == nil {
+			if sp, ok := loaded[specID]; ok {
+				return sp, nil
+			}
+		}
+	}
+
 	if s.factoryDef == nil {
-		return nil, fmt.Errorf("factory definition not loaded")
+		return nil, fmt.Errorf("spec %s not found", specID)
 	}
 
 	w, err := s.factoryDef.GetWorkflow(specID)
@@ -375,13 +460,70 @@ func (s *MCPServer) listAgents() (interface{}, error) {
 	}, nil
 }
 
-// runVerification runs the verification harness
+// runVerification runs the real VerificationEngine on the workspace.
 func (s *MCPServer) runVerification() (interface{}, error) {
-	// In a real implementation, this would trigger the verification
+	if s.factory == nil || s.factory.Verifier() == nil {
+		return nil, fmt.Errorf("verification engine not initialized")
+	}
+	res, err := s.factory.Verifier().RunVerification(context.Background(), "")
 	return map[string]interface{}{
-		"status":  "started",
-		"message": "Verification triggered",
+		"success":      res != nil && res.Success,
+		"verification": res,
+		"error": func() string {
+			if err != nil {
+				return err.Error()
+			}
+			return ""
+		}(),
 	}, nil
+}
+
+func (s *MCPServer) listStateMachines(args map[string]interface{}) (interface{}, error) {
+	categoryFilter, _ := args["category"].(string)
+	exports := make([]state.Export, 0, len(s.stateMachines))
+	for _, m := range s.stateMachines {
+		if categoryFilter != "" && m.Category() != categoryFilter {
+			continue
+		}
+		exports = append(exports, m.Export())
+	}
+	return map[string]interface{}{
+		"count":    len(exports),
+		"machines": exports,
+	}, nil
+}
+
+func (s *MCPServer) inspectStateMachine(args map[string]interface{}) (interface{}, error) {
+	machineName, _ := args["machine"].(string)
+	curState, _ := args["state"].(string)
+	nextState, _ := args["next_state"].(string)
+	if machineName == "" || curState == "" {
+		return nil, fmt.Errorf("machine and state are required")
+	}
+	var target *state.Machine
+	for _, m := range s.stateMachines {
+		if m.Name() == machineName {
+			target = m
+			break
+		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("state machine %q not found", machineName)
+	}
+
+	insp := target.Inspect(state.State(curState))
+	out := map[string]interface{}{
+		"inspection": insp,
+	}
+	if nextState != "" {
+		err := target.Validate(state.State(curState), state.State(nextState))
+		out["next_state"] = nextState
+		out["can_transition"] = err == nil
+		if err != nil {
+			out["validation_error"] = err.Error()
+		}
+	}
+	return out, nil
 }
 
 // handleResourcesList lists available resources
@@ -398,6 +540,12 @@ func (s *MCPServer) handleResourcesList(params map[string]interface{}) (interfac
 				"uri":         "factory://specs",
 				"name":        "Specifications",
 				"description": "All available specifications",
+				"mimeType":    "application/json",
+			},
+			{
+				"uri":         "factory://state-machines",
+				"name":        "Explicit State Machines",
+				"description": "Formal state transition tables and Mermaid diagrams for every factory lifecycle",
 				"mimeType":    "application/json",
 			},
 		},
@@ -423,6 +571,18 @@ func (s *MCPServer) handleResourcesRead(params map[string]interface{}) (interfac
 		}, nil
 	case "factory://specs":
 		result, _ := s.listSpecs()
+		data, _ := json.Marshal(result)
+		return map[string]interface{}{
+			"contents": []map[string]interface{}{
+				{
+					"uri":      uri,
+					"mimeType": "application/json",
+					"text":     string(data),
+				},
+			},
+		}, nil
+	case "factory://state-machines":
+		result, _ := s.listStateMachines(nil)
 		data, _ := json.Marshal(result)
 		return map[string]interface{}{
 			"contents": []map[string]interface{}{

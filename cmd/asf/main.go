@@ -3,17 +3,21 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/application"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/bootstrap"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/stateregistry"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/agents"
 	asfContext "github.com/PratikDhanave/agentic-software-factory-go/pkg/context"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factorydef"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/harness"
-	"github.com/PratikDhanave/agentic-software-factory-go/pkg/integration"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/mcp"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
@@ -30,6 +34,8 @@ func main() {
 	workingDir, _ := os.Getwd()
 
 	switch command {
+	case "build", "ship":
+		runBuildPipeline(workingDir, os.Args[2:])
 	case "init":
 		initProject(workingDir)
 	case "context":
@@ -68,6 +74,12 @@ func main() {
 			os.Exit(1)
 		}
 		runIntegrationCommand(workingDir, os.Args[2:])
+	case "triage":
+		runTriageCommand(os.Args[2:])
+	case "agent":
+		runAgentCommand(os.Args[2:])
+	case "tools":
+		runToolsCommand(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -137,12 +149,76 @@ func runIntegrationCommand(workingDir string, args []string) {
 	}
 }
 
+func runTriageCommand(args []string) {
+	cmd := flag.NewFlagSet("triage", flag.ExitOnError)
+	owner := cmd.String("owner", "", "GitHub owner")
+	repo := cmd.String("repo", "", "Repository name")
+	issue := cmd.String("issue", "", "Issue number")
+	_ = cmd.Parse(args)
+
+	if *owner == "" || *repo == "" || *issue == "" {
+		fmt.Println("Usage: asf triage -owner <owner> -repo <repo> -issue <number>")
+		os.Exit(1)
+	}
+
+	fmt.Printf("Triaging %s/%s#%s...\n", *owner, *repo, *issue)
+	agent := agents.NewLLMAgent("triage")
+	result, err := agent.ExecuteTask(fmt.Sprintf("Triage issue #%s in %s/%s", *issue, *owner, *repo))
+	if err != nil {
+		fmt.Printf("Triage error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(result)
+}
+
+func runAgentCommand(args []string) {
+	cmd := flag.NewFlagSet("agent", flag.ExitOnError)
+	name := cmd.String("name", "default", "Agent name")
+	task := cmd.String("task", "", "Task description")
+	_ = cmd.Parse(args)
+
+	if *task == "" {
+		fmt.Println("Usage: asf agent -name <name> -task <description>")
+		os.Exit(1)
+	}
+
+	agent := agents.NewLLMAgent(*name)
+	result, err := agent.ExecuteTask(*task)
+	if err != nil {
+		fmt.Printf("Agent error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(result)
+}
+
+func runToolsCommand(args []string) {
+	engine := agents.NewReasoningEngine()
+	cmd := flag.NewFlagSet("tools", flag.ExitOnError)
+	task := cmd.String("task", "", "Task to analyze")
+	_ = cmd.Parse(args)
+
+	if *task == "" {
+		fmt.Println("Available tools:")
+		for _, t := range []string{"get_issue", "create_issue", "add_labels", "post_comment", "create_pr", "get_pulls", "merge_pr", "get_releases", "create_release"} {
+			fmt.Printf("  - %s\n", t)
+		}
+		return
+	}
+
+	tools := engine.AnalyzeTask(*task)
+	fmt.Printf("Suggested tools for %q:\n", *task)
+	for i, tool := range tools {
+		fmt.Printf("  %d. %s\n", i+1, tool)
+	}
+}
+
 func printUsage() {
 	fmt.Print(`ASF - Agentic Software Factory CLI
 
 Usage: asf <command> [args...]
 
 Commands:
+  build             Run the 6-stage autonomous assembly line (spec -> agents -> sandbox -> verify -> judge)
   init              Initialize a new ASF project structure
   context           Load and display project context
   spec              Specification management
@@ -453,7 +529,83 @@ func runHarness(workingDir string, args []string) {
 
 // stateMachines lists every explicit state machine in the system.
 func stateMachines() []*state.Machine {
-	return append(factory.Machines(), verify.PhaseMachine, integration.ConnectionMachine)
+	return stateregistry.All()
+}
+
+func runBuildPipeline(workingDir string, args []string) {
+	fs := flag.NewFlagSet("build", flag.ExitOnError)
+	specID := fs.String("spec", "", "Existing spec ID in specs/")
+	desc := fs.String("desc", "", "Detailed requirement description")
+	promote := fs.Bool("promote", false, "Promote verified Go package into generated/<slug>/")
+	_ = fs.Parse(args)
+
+	title := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if title == "" && *specID == "" {
+		fmt.Println("Usage: asf build [-spec <spec-id>] [-desc <details>] [-promote] \"<engineering requirement>\"")
+		os.Exit(1)
+	}
+	if *desc == "" {
+		*desc = title
+	}
+
+	c, err := bootstrap.NewContainer(workingDir)
+	if err != nil {
+		fmt.Printf("Bootstrap error: %v\n", err)
+		os.Exit(1)
+	}
+	defer c.Close()
+
+	// Ensure CLI runs autonomously unless ASF_PHASE=crawl is explicitly requested
+	if os.Getenv("ASF_PHASE") == "" {
+		_ = c.SetPhase("walk")
+	}
+
+	fmt.Printf("▶ Starting Software Factory Assembly Line (LLM: %s, Phase: %s)...\n", c.LLMGateway.ProviderName(), c.Phase())
+	rec, err := c.Pipeline.StartRun(context.Background(), application.FactoryRunInput{
+		Title:       title,
+		Description: *desc,
+		SpecID:      *specID,
+		Phase:       c.Phase(),
+	}, true)
+	if err != nil {
+		fmt.Printf("✗ Factory run failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if tlRaw, ok := rec.Payload["timeline"]; ok {
+		b, _ := json.Marshal(tlRaw)
+		var timeline []application.StageTimelineEntry
+		_ = json.Unmarshal(b, &timeline)
+		for _, step := range timeline {
+			fmt.Printf("  [%s] %-20s %s\n", strings.ToUpper(step.Status), step.Stage, step.Message)
+		}
+	}
+
+	if rec.Status == "failed" {
+		fmt.Printf("\n✗ Run %s failed: %s\n", rec.ID, rec.Error)
+		os.Exit(1)
+	}
+	if rec.Status == "awaiting_approval" {
+		fmt.Printf("\n⏸ Run %s paused at Human Governance Gate (Session: %s). Approve in UI or set ASF_PHASE=walk.\n", rec.ID, rec.SessionID)
+		return
+	}
+
+	if *promote {
+		if promoted, pErr := c.Pipeline.PromoteRun(context.Background(), rec.ID, ""); pErr == nil {
+			rec = promoted
+			fmt.Printf("  [PROMOTED] Exported verified package to %s\n", rec.PromotedDir)
+		}
+	}
+
+	fmt.Printf("\n✓ Software Factory Run %s COMPLETED!\n", rec.ID)
+	fmt.Printf("  Spec ID       : %s\n", rec.SpecID)
+	fmt.Printf("  Workspace Dir : %s\n", rec.WorkspaceDir)
+	if rec.PromotedDir != "" {
+		fmt.Printf("  Promoted Dir  : %s\n", rec.PromotedDir)
+	}
+	if files, ok := rec.Payload["files_written"]; ok {
+		fmt.Printf("  Files Written : %v\n", files)
+	}
 }
 
 // runFactoryStates prints the declared state machines. Formats:
@@ -606,7 +758,7 @@ func runMCPServer(workingDir string, args []string) {
 	}
 
 	// Create MCP server
-	mcpServer := mcp.NewMCPServer(fo, factoryDef)
+	mcpServer := mcp.NewMCPServer(fo, factoryDef).WithStateMachines(stateregistry.All())
 
 	fmt.Printf("Starting MCP server on %s...\n", addr)
 	fmt.Println("Available tools: submit_task, get_task_result, get_factory_status, list_specs, get_spec, list_agents, run_verification")

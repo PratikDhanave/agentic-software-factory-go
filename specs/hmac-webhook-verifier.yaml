@@ -1,0 +1,27 @@
+id: "spec-webhook-verifier"
+version: "1.0"
+title: "Replay-Protected HMAC-SHA256 Webhook Verifier"
+description: "Cryptographic webhook authenticator using constant-time HMAC-SHA256 verification and sliding-window replay protection"
+intent:
+  goal: "Verify X-Hub-Signature-256 webhook payloads in constant time while rejecting replayed delivery IDs"
+  context: "Protects factory webhook ingress endpoints against tampering and replay attacks"
+  success_criteria:
+    - "Uses crypto/hmac.Equal for constant-time digest comparison"
+    - "Tracks seen delivery IDs within a configurable replay window and prunes expired entries"
+    - "Passes unit tests for valid signatures, tampered payloads, and replay rejection"
+constraints:
+  - id: "no-unsafe"
+    type: "must_not"
+    description: "unsafe.Pointer"
+steps:
+  - id: "step-hmac"
+    name: "Implement Sign & Constant-Time Verify"
+    description: "Compute sha256=<hex> digest and compare via hmac.Equal"
+  - id: "step-replay"
+    name: "Add Delivery ID Replay Cache"
+    description: "Reject duplicate delivery IDs within replayWindow and evict expired timestamps"
+    depends_on: ["step-hmac"]
+  - id: "step-tests"
+    name: "Test Cryptographic & Replay Invariants"
+    description: "Assert valid pass, invalid signature rejection, and duplicate delivery rejection"
+    depends_on: ["step-replay"]

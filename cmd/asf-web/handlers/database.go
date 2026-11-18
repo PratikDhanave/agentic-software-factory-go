@@ -4,44 +4,51 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 
-	"github.com/PratikDhanave/agentic-software-factory-go/pkg/db"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/adapters/persistence/sqlite"
 )
 
-var database *db.Database
+var (
+	sqliteStore  *sqlite.Store
+	workflowRepo *sqlite.WorkflowRepository
+)
 
-// InitDatabase initializes the database connection
-func InitDatabase(dsn string) error {
-	var err error
-	database, err = db.NewDatabase(dsn)
+// InitDatabase initializes or attaches the unified SQLite store.
+func InitDatabase(dbPath string) error {
+	if dbPath == "" {
+		dbPath = filepath.Join(".asf", "factory.db")
+	}
+	store, err := sqlite.Open(dbPath)
 	if err != nil {
 		return err
 	}
-
-	// Run migrations
-	if err := database.Migrate(); err != nil {
-		log.Printf("[DB] Migration error (continuing): %v", err)
-		// Don't fail on migration errors - table might already exist
-	}
-
-	log.Println("[Handler] Database initialized")
+	SetSQLiteStore(store)
+	log.Printf("[Handler] SQLite database initialized at %s", store.Path())
 	return nil
 }
 
-// GetDatabase returns the database instance
-func GetDatabase() *db.Database {
-	return database
+// SetSQLiteStore injects an already-opened sqlite.Store from bootstrap.
+func SetSQLiteStore(store *sqlite.Store) {
+	sqliteStore = store
+	if store != nil {
+		workflowRepo = sqlite.NewWorkflowRepository(store)
+	}
 }
 
-// HandleDatabaseStats returns comprehensive database statistics
+func GetSQLiteStore() *sqlite.Store {
+	return sqliteStore
+}
+
+// HandleDatabaseStats returns comprehensive SQLite database statistics.
 func HandleDatabaseStats(w http.ResponseWriter, r *http.Request) {
-	if database == nil {
+	if sqliteStore == nil {
 		http.Error(w, "Database not initialized", http.StatusServiceUnavailable)
 		return
 	}
 
-	stats, err := database.GetDashboardStats()
+	stats, err := sqliteStore.Stats(r.Context())
 	if err != nil {
 		log.Printf("[Handler] Failed to get stats: %v", err)
 		http.Error(w, "Failed to retrieve statistics", http.StatusInternalServerError)
@@ -49,33 +56,20 @@ func HandleDatabaseStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(stats)
 }
 
-// HandleWorkflowHistory returns historical workflow data
+// HandleWorkflowHistory returns historical workflow execution data from SQLite.
 func HandleWorkflowHistory(w http.ResponseWriter, r *http.Request) {
-	if database == nil {
+	if workflowRepo == nil {
 		http.Error(w, "Database not initialized", http.StatusServiceUnavailable)
 		return
 	}
 
-	limit := 20
-	offset := 0
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), 20, 1, 100)
+	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, 10000)
 
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 100 {
-			limit = v
-		}
-	}
-
-	if o := r.URL.Query().Get("offset"); o != "" {
-		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
-			offset = v
-		}
-	}
-
-	runs, err := database.GetWorkflowHistory(limit, offset)
+	runs, err := workflowRepo.ListExecutions(r.Context(), "", limit, offset)
 	if err != nil {
 		log.Printf("[Handler] Failed to get workflow history: %v", err)
 		http.Error(w, "Failed to retrieve workflow history", http.StatusInternalServerError)
@@ -83,7 +77,6 @@ func HandleWorkflowHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"workflows": runs,
 		"limit":     limit,
@@ -91,9 +84,9 @@ func HandleWorkflowHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleWorkflowDetails returns detailed information about a specific workflow
+// HandleWorkflowDetails returns detailed information about a specific workflow execution.
 func HandleWorkflowDetails(w http.ResponseWriter, r *http.Request) {
-	if database == nil {
+	if workflowRepo == nil {
 		http.Error(w, "Database not initialized", http.StatusServiceUnavailable)
 		return
 	}
@@ -104,87 +97,45 @@ func HandleWorkflowDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	details, err := database.GetWorkflowDetails(workflowID)
+	details, err := workflowRepo.GetExecution(r.Context(), workflowID)
 	if err != nil {
-		log.Printf("[Handler] Failed to get workflow details: %v", err)
 		http.Error(w, "Workflow not found", http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(details)
 }
 
-// HandleDatabaseHealth returns database health status
+// HandleDatabaseHealth returns SQLite health status.
 func HandleDatabaseHealth(w http.ResponseWriter, r *http.Request) {
-	if database == nil {
+	if sqliteStore == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]interface{}{
+			"engine": "sqlite3",
 			"status": "disconnected",
 		})
 		return
 	}
 
-	health := database.Health()
-	status := "healthy"
-	if health["error"] != nil {
-		status = "unhealthy"
-	}
-
+	health := sqliteStore.Health(r.Context())
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": status,
-		"error":  health["error"],
-	})
+	json.NewEncoder(w).Encode(health)
 }
 
-// HandleSearchWorkflows searches for workflows by type
+// HandleSearchWorkflows searches workflow definitions/executions in SQLite.
 func HandleSearchWorkflows(w http.ResponseWriter, r *http.Request) {
-	if database == nil {
-		http.Error(w, "Database not initialized", http.StatusServiceUnavailable)
-		return
+	HandleWorkflowHistory(w, r)
+}
+
+func parseBoundedInt(raw string, defVal, minVal, maxVal int) int {
+	if raw == "" {
+		return defVal
 	}
-
-	wfType := r.URL.Query().Get("type")
-	limit := 20
-	offset := 0
-
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 100 {
-			limit = v
-		}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < minVal || v > maxVal {
+		return defVal
 	}
-
-	if o := r.URL.Query().Get("offset"); o != "" {
-		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
-			offset = v
-		}
-	}
-
-	var runs interface{}
-	var err error
-
-	if wfType != "" {
-		runs, err = database.GetWorkflowByType(wfType, limit, offset)
-	} else {
-		runs, err = database.GetWorkflowHistory(limit, offset)
-	}
-
-	if err != nil {
-		log.Printf("[Handler] Failed to search workflows: %v", err)
-		http.Error(w, "Failed to search workflows", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"results": runs,
-		"type":    wfType,
-		"limit":   limit,
-		"offset":  offset,
-	})
+	return v
 }

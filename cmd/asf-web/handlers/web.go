@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // HandleWebUI serves the main dashboard HTML
@@ -24,9 +25,11 @@ func HandleStatic(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path[len("/static/"):]
 	filePath := filepath.Join("web/static", path)
 
-	// Security: prevent directory traversal
+	// Security: prevent directory traversal with proper path-boundary check
+	baseDir := filepath.Clean("web/static")
 	cleanPath := filepath.Clean(filePath)
-	if !filepath.HasPrefix(cleanPath, filepath.Clean("web/static")) {
+	rel, err := filepath.Rel(baseDir, cleanPath)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}

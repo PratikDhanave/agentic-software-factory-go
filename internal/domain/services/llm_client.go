@@ -3,29 +3,72 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain/entities"
 )
 
 type LLMRequest struct {
-	Model            string
-	Prompt           string
-	SystemPrompt     string
-	Temperature      float64
-	MaxTokens        int
-	ResponseSchema   interface{}
-	JsonMode         bool
+	Model          string
+	Prompt         string
+	SystemPrompt   string
+	Temperature    float64
+	MaxTokens      int
+	ResponseSchema interface{}
+	JsonMode       bool
 }
 
 type LLMResponse struct {
-	Content string
-	Tokens  int
-	Error   error
+	Content  string
+	Tokens   int
+	Provider string
+	Model    string
+	Error    error
 }
 
 type LLMClient interface {
 	Call(ctx context.Context, req *LLMRequest) (*LLMResponse, error)
+}
+
+// LLMProvider is the unified multi-provider gateway contract across Anthropic,
+// OpenAI-compatible endpoints, local Ollama, and offline deterministic mocks.
+type LLMProvider interface {
+	LLMClient
+	Complete(ctx context.Context, req *LLMRequest) (*LLMResponse, error)
+	ProviderName() string
+	HealthCheck(ctx context.Context) error
+}
+
+// ExtractJSONBlock strips optional Markdown code fences and isolates the outer
+// JSON object or array from an LLM completion string.
+func ExtractJSONBlock(raw string) string {
+	s := strings.TrimSpace(raw)
+	if strings.Contains(s, "```") {
+		parts := strings.Split(s, "```")
+		for i := 1; i < len(parts); i += 2 {
+			block := strings.TrimSpace(parts[i])
+			if strings.HasPrefix(strings.ToLower(block), "json") {
+				block = strings.TrimSpace(block[4:])
+			}
+			if strings.HasPrefix(block, "{") || strings.HasPrefix(block, "[") {
+				return block
+			}
+		}
+	}
+
+	firstObj := strings.IndexByte(s, '{')
+	lastObj := strings.LastIndexByte(s, '}')
+	firstArr := strings.IndexByte(s, '[')
+	lastArr := strings.LastIndexByte(s, ']')
+
+	if firstObj >= 0 && lastObj > firstObj && (firstArr < 0 || firstObj < firstArr) {
+		return s[firstObj : lastObj+1]
+	}
+	if firstArr >= 0 && lastArr > firstArr {
+		return s[firstArr : lastArr+1]
+	}
+	return s
 }
 
 type AgentRequest struct {
@@ -138,7 +181,8 @@ Decision Required: ` + req.Query
 
 func (a *BaseAgent) parseDecision(jsonStr string) *entities.Decision {
 	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+	cleanJSON := ExtractJSONBlock(jsonStr)
+	if err := json.Unmarshal([]byte(cleanJSON), &data); err != nil {
 		a.logger.Error("Failed to parse decision JSON", err, "agent_role", a.role)
 		return &entities.Decision{
 			AgentRole:  a.role,

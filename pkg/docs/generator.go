@@ -8,7 +8,7 @@ import (
 )
 
 type DocGenerator struct {
-	ollama *llm.OllamaClient
+	ollama llm.Client
 }
 
 type Documentation struct {
@@ -24,6 +24,10 @@ func NewDocGenerator(ollamaURL, model string) *DocGenerator {
 	return &DocGenerator{
 		ollama: llm.NewOllamaClient(ollamaURL, model),
 	}
+}
+
+func NewDocGeneratorWithClient(client llm.Client) *DocGenerator {
+	return &DocGenerator{ollama: client}
 }
 
 // GenerateREADME creates a README from code

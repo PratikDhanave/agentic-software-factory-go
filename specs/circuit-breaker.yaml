@@ -1,0 +1,27 @@
+id: "spec-circuit-breaker"
+version: "1.0"
+title: "State-Machine Circuit Breaker"
+description: "Resilient circuit breaker guarding downstream RPC calls with closed, open, and half-open recovery transitions"
+intent:
+  goal: "Implement a thread-safe Go CircuitBreaker with configurable failure threshold and cooldown reset timeout"
+  context: "Prevents cascading failures across external LLM and webhook calls"
+  success_criteria:
+    - "Transitions Closed -> Open after N consecutive failures"
+    - "Fast-fails with ErrCircuitOpen while Open before resetTimeout"
+    - "Transitions Open -> HalfOpen -> Closed on successful probe after resetTimeout"
+constraints:
+  - id: "no-unsafe"
+    type: "must_not"
+    description: "unsafe.Pointer"
+steps:
+  - id: "step-states"
+    name: "Declare Explicit States & Error Sentinel"
+    description: "Define StateClosed, StateOpen, StateHalfOpen, and ErrCircuitOpen"
+  - id: "step-exec"
+    name: "Implement Execute Wrapper"
+    description: "Guard fn() execution with state checks and atomic failure/recovery transitions"
+    depends_on: ["step-states"]
+  - id: "step-tests"
+    name: "Verify Full State-Machine Lifecycle"
+    description: "Test threshold tripping, fast-fail while open, and half-open recovery"
+    depends_on: ["step-exec"]

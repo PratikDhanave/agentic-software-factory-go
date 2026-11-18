@@ -10,7 +10,7 @@ import (
 )
 
 type CodeGenerator struct {
-	ollama *llm.OllamaClient
+	ollama llm.Client
 }
 
 type Specification struct {
@@ -37,6 +37,10 @@ func NewCodeGenerator(ollamaURL, model string) *CodeGenerator {
 	return &CodeGenerator{
 		ollama: llm.NewOllamaClient(ollamaURL, model),
 	}
+}
+
+func NewCodeGeneratorWithClient(client llm.Client) *CodeGenerator {
+	return &CodeGenerator{ollama: client}
 }
 
 // Generate creates code from a specification

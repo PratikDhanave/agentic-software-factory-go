@@ -9,7 +9,7 @@ import (
 )
 
 type BugDetector struct {
-	ollama *llm.OllamaClient
+	ollama llm.Client
 }
 
 type Bug struct {
@@ -35,6 +35,10 @@ func NewBugDetector(ollamaURL, model string) *BugDetector {
 	return &BugDetector{
 		ollama: llm.NewOllamaClient(ollamaURL, model),
 	}
+}
+
+func NewBugDetectorWithClient(client llm.Client) *BugDetector {
+	return &BugDetector{ollama: client}
 }
 
 // Detect finds potential bugs in code

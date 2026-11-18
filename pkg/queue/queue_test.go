@@ -7,8 +7,6 @@ import (
 
 func TestQueueSubmit(t *testing.T) {
 	queue := NewQueue(2, 3)
-	queue.Start()
-	defer queue.Stop()
 
 	job := &Job{
 		ID:   "test-1",
@@ -19,6 +17,7 @@ func TestQueueSubmit(t *testing.T) {
 		},
 	}
 
+	// Submit before starting workers so initial pending state is deterministic.
 	if err := queue.Submit(job); err != nil {
 		t.Fatalf("Failed to submit job: %v", err)
 	}
@@ -27,10 +26,25 @@ func TestQueueSubmit(t *testing.T) {
 	if !ok {
 		t.Fatal("Job not found")
 	}
-
 	if retrieved.Status != "pending" {
-		t.Errorf("Expected pending, got %s", retrieved.Status)
+		t.Errorf("Expected pending before worker start, got %s", retrieved.Status)
 	}
+
+	queue.Start()
+	defer queue.Stop()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, exists := queue.Get("test-1")
+		if exists && current.Status == "success" {
+			if current.Output["result"] != "success" {
+				t.Fatalf("Expected output result=success, got %v", current.Output)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("Timed out waiting for queued job to complete")
 }
 
 func TestQueueStats(t *testing.T) {

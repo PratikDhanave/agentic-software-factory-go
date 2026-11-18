@@ -10,7 +10,7 @@ import (
 )
 
 type CodeReviewer struct {
-	ollama *llm.OllamaClient
+	ollama llm.Client
 }
 
 type ReviewRequest struct {
@@ -41,6 +41,10 @@ func NewCodeReviewer(ollamaURL, model string) *CodeReviewer {
 	return &CodeReviewer{
 		ollama: llm.NewOllamaClient(ollamaURL, model),
 	}
+}
+
+func NewCodeReviewerWithClient(client llm.Client) *CodeReviewer {
+	return &CodeReviewer{ollama: client}
 }
 
 // Review analyzes code and returns findings

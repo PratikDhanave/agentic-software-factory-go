@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,12 +15,8 @@ type JobExecutor interface {
 	Execute(ctx context.Context, taskName string, input map[string]interface{}) (interface{}, error)
 }
 
-// Logger interface (defined here to avoid import cycles)
-type LoggerInterface interface {
-	Info(msg string, fields ...interface{})
-	Error(msg string, err error, fields ...interface{})
-	Debug(msg string, fields ...interface{})
-}
+// LoggerInterface aliases Logger so all domain services share a single logger contract.
+type LoggerInterface = Logger
 
 // DAGExecutor executes a DAG of jobs with parallelism and dependency management
 type DAGExecutor struct {
@@ -62,6 +59,8 @@ func (e *DAGExecutor) Execute(ctx context.Context, dag *DirectedAcyclicGraph,
 	if len(levels) == 0 {
 		return fmt.Errorf("no execution levels computed for DAG")
 	}
+
+	_ = execution.TransitionTo(entities.WorkflowExecRunning)
 
 	// Track results and errors
 	results := make(map[string]interface{})
@@ -122,7 +121,7 @@ func (e *DAGExecutor) Execute(ctx context.Context, dag *DirectedAcyclicGraph,
 			// Update execution with partial results
 			execution.NodesMap = e.buildExecutionNodes(dag, results, errors)
 			execution.Results = results
-			execution.Status = entities.WorkflowExecFailed
+			_ = execution.TransitionTo(entities.WorkflowExecFailed)
 
 			return fmt.Errorf("level %d execution failed with %d errors", levelNum, failedCount)
 		}
@@ -137,9 +136,7 @@ func (e *DAGExecutor) Execute(ctx context.Context, dag *DirectedAcyclicGraph,
 	// Update execution with final results
 	execution.NodesMap = e.buildExecutionNodes(dag, results, errors)
 	execution.Results = results
-	execution.Status = entities.WorkflowExecCompleted
-	now := time.Now()
-	execution.CompletedAt = &now
+	_ = execution.TransitionTo(entities.WorkflowExecCompleted)
 
 	e.logger.Info("DAG execution completed",
 		"execution_id", execution.ID,
@@ -292,14 +289,13 @@ func (e *DAGExecutor) resolveInput(input map[string]interface{},
 
 // resolveTemplate replaces {{ jobs.xxx.output }} with actual values
 func (e *DAGExecutor) resolveTemplate(template string, results map[string]interface{}) (interface{}, bool) {
-	// Check for template pattern: {{ jobs.xxx.output }} or {{ jobs.xxx.output.field }}
-	if len(template) < 15 || template[:2] != "{{" || template[len(template)-2:] != "}}" {
+	trimmed := strings.TrimSpace(template)
+	if len(trimmed) < 10 || !strings.HasPrefix(trimmed, "{{") || !strings.HasSuffix(trimmed, "}}") {
 		return nil, false
 	}
 
 	// Extract content: "jobs.xxx.output"
-	content := template[2 : len(template)-2]
-	content = content[1 : len(content)-1] // Remove spaces
+	content := strings.TrimSpace(trimmed[2 : len(trimmed)-2])
 
 	// Parse: "jobs.xxx.output" or "jobs.xxx.output.field"
 	parts := make([]string, 0)

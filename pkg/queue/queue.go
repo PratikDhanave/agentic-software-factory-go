@@ -5,7 +5,22 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
 )
+
+// QueueJobMachine explicitly declares the lifecycle of in-memory & webhook queue jobs.
+var QueueJobMachine = state.NewMachine("queue-job", "pending", map[state.State][]state.State{
+	"pending": {"running"},
+	"running": {"success", "failed", "pending"},
+}).WithCategory("execution").
+	WithDescription("Concurrent in-memory dispatcher job lifecycle with exponential backoff retry.").
+	WithStateDescriptions(map[state.State]string{
+		"pending": "Queued in ring/channel buffer awaiting worker pickup.",
+		"running": "Worker goroutine executing ExecutionFn.",
+		"success": "Job completed without error (terminal).",
+		"failed":  "All retry attempts exhausted (terminal).",
+	})
 
 // Job represents a workflow job to be executed
 type Job struct {
@@ -71,36 +86,74 @@ func (q *Queue) Stop() {
 	close(q.jobsChan)
 }
 
+// cloneJob returns a shallow-deep copy of Job safe for concurrent callers.
+func cloneJob(job *Job) *Job {
+	if job == nil {
+		return nil
+	}
+	cp := *job
+	if job.StartedAt != nil {
+		t := *job.StartedAt
+		cp.StartedAt = &t
+	}
+	if job.CompletedAt != nil {
+		t := *job.CompletedAt
+		cp.CompletedAt = &t
+	}
+	if job.Input != nil {
+		cp.Input = make(map[string]interface{}, len(job.Input))
+		for k, v := range job.Input {
+			cp.Input[k] = v
+		}
+	}
+	if job.Output != nil {
+		cp.Output = make(map[string]interface{}, len(job.Output))
+		for k, v := range job.Output {
+			cp.Output[k] = v
+		}
+	}
+	return &cp
+}
+
 // Submit adds a job to the queue
 func (q *Queue) Submit(job *Job) error {
 	if job.ID == "" {
 		return fmt.Errorf("job must have an ID")
 	}
 
-	job.CreatedAt = time.Now()
-	job.Status = "pending"
-	job.MaxRetries = q.maxRetries
+	stored := cloneJob(job)
+	stored.CreatedAt = time.Now()
+	stored.Status = "pending"
+	stored.MaxRetries = q.maxRetries
+
+	// Also initialize caller's metadata prior to worker pickup
+	job.CreatedAt = stored.CreatedAt
+	job.Status = stored.Status
+	job.MaxRetries = stored.MaxRetries
 
 	q.mu.Lock()
-	q.jobs[job.ID] = job
+	q.jobs[stored.ID] = stored
 	q.mu.Unlock()
 
-	q.jobsChan <- job
-	log.Printf("[Queue] Job submitted: %s (type: %s, priority: %d)", job.ID, job.Type, job.Priority)
+	q.jobsChan <- stored
+	log.Printf("[Queue] Job submitted: %s (type: %s, priority: %d)", stored.ID, stored.Type, stored.Priority)
 
 	return nil
 }
 
-// Get retrieves a job by ID
+// Get retrieves a snapshot of a job by ID
 func (q *Queue) Get(jobID string) (*Job, bool) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
 	job, ok := q.jobs[jobID]
-	return job, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneJob(job), true
 }
 
-// GetByStatus returns all jobs with a specific status
+// GetByStatus returns snapshots of all jobs with a specific status
 func (q *Queue) GetByStatus(status string) []*Job {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
@@ -108,7 +161,7 @@ func (q *Queue) GetByStatus(status string) []*Job {
 	var result []*Job
 	for _, job := range q.jobs {
 		if job.Status == status {
-			result = append(result, job)
+			result = append(result, cloneJob(job))
 		}
 	}
 	return result
@@ -161,7 +214,7 @@ func (q *Queue) worker(id int) {
 // executeJob runs a job with retry logic
 func (q *Queue) executeJob(job *Job) {
 	q.mu.Lock()
-	job.Status = "running"
+	_ = QueueJobMachine.TransitionString(&job.Status, "running")
 	now := time.Now()
 	job.StartedAt = &now
 	q.running[job.ID] = job
@@ -185,7 +238,7 @@ func (q *Queue) executeJob(job *Job) {
 		// Retry logic
 		if job.Retries < job.MaxRetries {
 			job.Retries++
-			job.Status = "pending"
+			_ = QueueJobMachine.TransitionString(&job.Status, "pending")
 			job.StartedAt = nil
 			job.CompletedAt = nil
 
@@ -200,10 +253,10 @@ func (q *Queue) executeJob(job *Job) {
 			return
 		}
 
-		job.Status = "failed"
+		_ = QueueJobMachine.TransitionString(&job.Status, "failed")
 		log.Printf("[Queue] Job failed permanently: %s - %v", job.ID, err)
 	} else {
-		job.Status = "success"
+		_ = QueueJobMachine.TransitionString(&job.Status, "success")
 		log.Printf("[Queue] Job completed: %s", job.ID)
 	}
 

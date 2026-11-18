@@ -1,168 +1,215 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { apiClient, PendingApproval } from '@/lib/api';
-import { CheckCircle, XCircle, AlertCircle, Loader, RefreshCw } from 'lucide-react';
+import { approvalsInboxMachine, useMachine } from '@/lib/stateMachine';
+import { CheckCircle2, Clock, RefreshCw, ShieldCheck, XCircle } from 'lucide-react';
 
-export default function ApprovalsPanel() {
+interface Props {
+  onApprovalResolved?: () => void;
+}
+
+export default function ApprovalsPanel({ onApprovalResolved }: Props) {
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [processing, setProcessing] = useState<string | null>(null);
-  const [overrideId, setOverrideId] = useState<string | null>(null);
-  const [overrideValue, setOverrideValue] = useState('');
+  const inbox = useMachine(approvalsInboxMachine);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [banner, setBanner] = useState('');
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [overrideSelection, setOverrideSelection] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    loadApprovals();
-    const interval = setInterval(loadApprovals, 5000);
-    return () => clearInterval(interval);
+  const fetchApprovals = useCallback(async () => {
+    try {
+      const response = await apiClient.getPendingApprovals();
+      const list = response.approvals || response.pending_approvals || [];
+      setApprovals(list);
+      setErrorMessage('');
+      inbox.send(list.length > 0 ? 'ready' : 'empty');
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Unable to load approvals');
+      inbox.send('error');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadApprovals = async () => {
+  useEffect(() => {
+    fetchApprovals();
+    const interval = setInterval(fetchApprovals, 5000);
+    return () => clearInterval(interval);
+  }, [fetchApprovals]);
+
+  const handleDecision = async (item: PendingApproval, approved: boolean) => {
+    const key = item.id || `${item.session_id}:${item.agent_role}`;
+    setActiveKey(key);
+    inbox.send('submitting');
+    setBanner('');
+    setErrorMessage('');
+
     try {
-      const data = await apiClient.getPendingApprovals();
-      setApprovals(data);
-      setError('');
+      const chosenOverride = overrideSelection[key];
+      const res = await apiClient.submitApproval({
+        approval_id: item.id,
+        session_id: item.session_id,
+        approved,
+        override: approved && chosenOverride ? chosenOverride : undefined,
+      });
+      setBanner(res.message || (approved ? 'Approved and resumed execution.' : 'Decision rejected.'));
+      await fetchApprovals();
+      onApprovalResolved?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load approvals');
+      inbox.send('error');
+      setErrorMessage(err instanceof Error ? err.message : 'Submission failed');
     } finally {
-      setLoading(false);
+      setActiveKey(null);
     }
   };
-
-  const handleApproval = async (id: string, approved: boolean, override?: string) => {
-    setProcessing(id);
-    try {
-      await apiClient.submitApproval(id, approved, override);
-      setApprovals(approvals.filter((a) => a.id !== id));
-      setOverrideId(null);
-      setOverrideValue('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to submit approval');
-    } finally {
-      setProcessing(null);
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="bg-white rounded-lg shadow-md p-6">
-        <div className="flex items-center justify-center gap-2 py-12">
-          <Loader className="w-5 h-5 animate-spin text-blue-600" />
-          <p className="text-gray-600">Loading pending approvals...</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">
-          Pending Approvals {approvals.length > 0 && `(${approvals.length})`}
-        </h2>
-        <button
-          onClick={loadApprovals}
-          className="p-2 hover:bg-gray-100 rounded-lg transition"
-          title="Refresh"
-        >
-          <RefreshCw className="w-5 h-5 text-gray-600" />
-        </button>
+    <div className="ide-surface border ide-border rounded-xl p-6 space-y-5 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b ide-border">
+        <div className="flex items-center gap-2.5">
+          <ShieldCheck className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+          <div>
+            <h2 className="text-lg font-semibold ide-ink">
+              Pending Approvals ({approvals.length})
+            </h2>
+            <p className="text-xs ide-ink-secondary">
+              Human-in-the-loop review queue for Supervised (Crawl) and low-confidence agent decisions.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-mono px-2 py-0.5 rounded ide-subtle ide-ink-muted">
+            state: {inbox.current}
+          </span>
+          <button
+            type="button"
+            onClick={fetchApprovals}
+            className="p-2 rounded-lg ide-canvas border ide-border ide-ink-secondary hover:ide-ink transition"
+            title="Refresh approvals"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
-      {error && (
-        <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-lg mb-4">
-          <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-red-700">{error}</p>
+      {banner && (
+        <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 text-xs text-emerald-800 dark:text-emerald-200">
+          {banner}
         </div>
       )}
 
-      {approvals.length === 0 ? (
-        <div className="text-center py-12 text-gray-600">
-          <CheckCircle className="w-12 h-12 text-green-500 mx-auto mb-4" />
-          <p>No pending approvals</p>
+      {errorMessage && (
+        <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
+          {errorMessage}
+        </div>
+      )}
+
+      {inbox.current === 'loading' && approvals.length === 0 ? (
+        <div className="py-10 text-center text-xs ide-ink-muted">
+          Loading pending approvals...
+        </div>
+      ) : approvals.length === 0 ? (
+        <div className="py-12 text-center rounded-lg ide-canvas border border-dashed ide-border">
+          <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto mb-2" />
+          <p className="text-sm font-medium ide-ink">No pending approvals</p>
+          <p className="text-xs ide-ink-muted mt-1 max-w-md mx-auto">
+            All governance checkpoints are clear. Switch Autonomy Mode to Supervised (Crawl) at the top right to pause every build for review.
+          </p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {approvals.map((approval) => (
-            <div
-              key={approval.id}
-              className="p-4 border border-yellow-200 bg-yellow-50 rounded-lg"
-            >
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <h3 className="font-semibold text-gray-900">
-                    {approval.agent_role}
-                  </h3>
-                  <p className="text-sm text-gray-600 mt-1">{approval.decision}</p>
-                  <div className="flex items-center gap-4 mt-3">
-                    <span className="text-xs font-semibold px-2 py-1 bg-blue-100 text-blue-800 rounded">
-                      {Math.round(approval.confidence * 100)}% confidence
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      {new Date(approval.created_at).toLocaleTimeString()}
-                    </span>
+        <div className="space-y-3">
+          {approvals.map((item, idx) => {
+            const key = item.id || `${item.session_id}:${item.agent_role}:${idx}`;
+            const confPct = Math.round((item.confidence ?? 0) * 100);
+            const options = item.options || item.alternatives || [];
+            const proposed = item.current_choice || item.decision || '';
+            const busy = activeKey === key;
+
+            return (
+              <div
+                key={key}
+                className="p-4 rounded-xl ide-canvas border ide-border space-y-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold ide-ink">{item.agent_role}</span>
+                      <span className="text-xs font-mono px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30">
+                        {confPct}% confidence
+                      </span>
+                    </div>
+                    {item.issue_title && (
+                      <div className="text-xs font-medium ide-ink-secondary mt-1">
+                        {item.issue_title}
+                      </div>
+                    )}
+                    <div className="text-[11px] font-mono ide-ink-muted mt-0.5 flex items-center gap-1.5">
+                      <Clock className="w-3 h-3" />
+                      Session: {item.session_id}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleDecision(item, true)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold transition"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleDecision(item, false)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg ide-surface hover:bg-rose-50 dark:hover:bg-rose-500/10 border ide-border text-rose-600 dark:text-rose-400 text-xs font-semibold transition"
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      Reject
+                    </button>
                   </div>
                 </div>
-              </div>
 
-              {overrideId === approval.id && (
-                <div className="mb-4 p-3 bg-white rounded border border-gray-300">
-                  <input
-                    type="text"
-                    placeholder="Enter override reason..."
-                    value={overrideValue}
-                    onChange={(e) => setOverrideValue(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-              )}
+                {proposed && (
+                  <div className="text-xs ide-ink">
+                    <span className="ide-ink-muted">Proposed strategy: </span>
+                    <strong className="font-medium">{proposed}</strong>
+                  </div>
+                )}
 
-              <div className="flex gap-3">
-                <button
-                  onClick={() => handleApproval(approval.id, true)}
-                  disabled={processing === approval.id}
-                  className="flex-1 flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-medium py-2 rounded-lg transition text-sm"
-                >
-                  {processing === approval.id ? (
-                    <Loader className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <CheckCircle className="w-4 h-4" />
-                  )}
-                  Approve
-                </button>
-                <button
-                  onClick={() => handleApproval(approval.id, false)}
-                  disabled={processing === approval.id}
-                  className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white font-medium py-2 rounded-lg transition text-sm flex items-center justify-center gap-2"
-                >
-                  {processing === approval.id ? (
-                    <Loader className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <XCircle className="w-4 h-4" />
-                  )}
-                  Reject
-                </button>
-                {overrideId === approval.id ? (
-                  <button
-                    onClick={() =>
-                      handleApproval(approval.id, true, overrideValue)
-                    }
-                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg transition text-sm"
-                  >
-                    Override
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => setOverrideId(approval.id)}
-                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg transition text-sm"
-                  >
-                    Override
-                  </button>
+                {item.reasoning && (
+                  <p className="text-xs ide-ink-secondary leading-relaxed">{item.reasoning}</p>
+                )}
+
+                {options.length > 0 && (
+                  <div className="pt-2 border-t ide-border flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] ide-ink-muted">Optional override:</span>
+                    {options.map((opt) => {
+                      const activeOpt = (overrideSelection[key] ?? proposed) === opt;
+                      return (
+                        <button
+                          key={opt}
+                          type="button"
+                          onClick={() =>
+                            setOverrideSelection((prev) => ({ ...prev, [key]: opt }))
+                          }
+                          className={`text-xs px-2.5 py-1 rounded-md border transition ${
+                            activeOpt
+                              ? 'bg-blue-600/10 border-blue-600 text-blue-700 dark:text-blue-300 font-medium'
+                              : 'ide-surface ide-border ide-ink-secondary hover:ide-ink'
+                          }`}
+                        >
+                          {opt}
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

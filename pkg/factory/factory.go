@@ -2,6 +2,7 @@ package factory
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,6 +21,7 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/spec"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/state"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/verify"
+	"github.com/PratikDhanave/agentic-software-factory-go/pkg/workspace"
 	"github.com/google/uuid"
 )
 
@@ -124,11 +126,42 @@ type FactoryOrchestrator struct {
 	runCtx        context.Context
 }
 
+// FactoryConfig configures FactoryOrchestrator with optional shared SQLite DB
+// and multi-provider LLM + judge clients.
+type FactoryConfig struct {
+	WorkingDir    string
+	MaxWorkers    int
+	SharedDB      *sql.DB
+	Agent         harness.AgentClient
+	EvalClient    eval.LLMClient
+	AgentProvider string
+	AgentModel    string
+}
+
 // NewFactoryOrchestrator creates a new factory orchestrator
 func NewFactoryOrchestrator(workingDir string, maxWorkers int) (*FactoryOrchestrator, error) {
-	// Initialize persistence
-	dataDir := filepath.Join(workingDir, ".asf")
-	persist, err := persistence.NewPersistenceManager(dataDir)
+	return NewFactoryOrchestratorWithConfig(FactoryConfig{
+		WorkingDir: workingDir,
+		MaxWorkers: maxWorkers,
+	})
+}
+
+// NewFactoryOrchestratorWithConfig creates a factory orchestrator from explicit config.
+func NewFactoryOrchestratorWithConfig(cfg FactoryConfig) (*FactoryOrchestrator, error) {
+	if cfg.MaxWorkers <= 0 {
+		cfg.MaxWorkers = 4
+	}
+
+	var (
+		persist *persistence.PersistenceManager
+		err     error
+	)
+	if cfg.SharedDB != nil {
+		persist, err = persistence.NewPersistenceManagerWithDB(cfg.SharedDB)
+	} else {
+		dataDir := filepath.Join(cfg.WorkingDir, ".asf")
+		persist, err = persistence.NewPersistenceManager(dataDir)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("initializing persistence: %w", err)
 	}
@@ -137,21 +170,27 @@ func NewFactoryOrchestrator(workingDir string, maxWorkers int) (*FactoryOrchestr
 		workers:       make(map[string]*Worker),
 		taskQueue:     make(chan *Task, 100),
 		results:       make(map[string]*Task),
-		harness:       harness.NewCompleteHarness(workingDir),
-		contextEngine: asfContext.NewContextEngine(workingDir),
-		specEngine:    spec.NewSpecEngine(filepath.Join(workingDir, "specs")),
-		verifier:      verify.NewVerificationEngine(workingDir),
+		harness:       harness.NewCompleteHarness(cfg.WorkingDir),
+		contextEngine: asfContext.NewContextEngine(cfg.WorkingDir),
+		specEngine:    spec.NewSpecEngine(filepath.Join(cfg.WorkingDir, "specs")),
+		verifier:      verify.NewVerificationEngine(cfg.WorkingDir),
 		persistence:   persist,
-		maxWorkers:    maxWorkers,
+		llmSlots:      make(chan struct{}, llmMaxConcurrent()),
+		evalCriteria:  eval.DefaultEvaluationCriteria(),
+		contextBudget: contextBudgetFor(cfg.AgentProvider),
+		maxWorkers:    cfg.MaxWorkers,
 		shutdown:      make(chan struct{}),
 	}
 
-	// Factory runs in prompt-only mode with Ollama support via agents layer
-	log.Printf("factory: running in prompt-only mode (use agents with Ollama for LLM)")
+	if cfg.Agent != nil {
+		fo.SetAgent(cfg.Agent, cfg.EvalClient, cfg.AgentProvider, cfg.AgentModel)
+	} else {
+		log.Printf("factory: running in prompt-only mode (attach AgentClient for closed-loop execution)")
+	}
 
 	// Initialize workers
-	for i := 0; i < maxWorkers; i++ {
-		fo.addWorker(fmt.Sprintf("worker-%d", i), "agent", []string{"generate", "verify"})
+	for i := 0; i < cfg.MaxWorkers; i++ {
+		fo.addWorker(fmt.Sprintf("worker-%d", i), "agent", []string{"generate", "verify", "review", "refactor", "evaluate"})
 	}
 
 	// Restore persisted tasks
@@ -160,6 +199,29 @@ func NewFactoryOrchestrator(workingDir string, maxWorkers int) (*FactoryOrchestr
 	}
 
 	return fo, nil
+}
+
+// SetAgent wires a live or deterministic LLM AgentClient and optional LLM-as-a-judge client.
+func (fo *FactoryOrchestrator) SetAgent(agent harness.AgentClient, evalClient eval.LLMClient, provider, model string) {
+	fo.mu.Lock()
+	defer fo.mu.Unlock()
+	fo.agent = agent
+	fo.agentProvider = provider
+	fo.agentModel = model
+	fo.contextBudget = contextBudgetFor(provider)
+	if evalClient != nil {
+		fo.evaluator = eval.NewEvaluationEngine(evalClient)
+	}
+}
+
+// SpecEngine exposes the specification engine for MCP and HTTP control planes.
+func (fo *FactoryOrchestrator) SpecEngine() *spec.SpecEngine {
+	return fo.specEngine
+}
+
+// Verifier exposes the verification engine for MCP and HTTP control planes.
+func (fo *FactoryOrchestrator) Verifier() *verify.VerificationEngine {
+	return fo.verifier
 }
 
 // addWorker adds a new worker to the factory
@@ -576,12 +638,23 @@ func (fo *FactoryOrchestrator) runAgentTask(ctx context.Context, task *Task, ins
 	return nil
 }
 
-// executeGenerate executes a code generation task through the improvement
-// loop: generate, judge against the spec (LLM-as-a-judge), and when the
-// verdict is below threshold, regenerate with the judge's feedback — up to
-// evalMaxAttempts attempts. A judge failure never fails the task; the
-// generated output stands with a note.
+// executeGenerate executes a code generation task through a two-tier
+// self-healing loop:
+//  1. When the model emits Go source artifacts, materialize them into an
+//     isolated workspace and run real build/test/vet/constraint verification,
+//     feeding compiler/test errors back before spending judge tokens.
+//  2. Run LLM-as-a-judge evaluation against the spec and revise if below
+//     threshold, up to evalMaxAttempts.
 func (fo *FactoryOrchestrator) executeGenerate(ctx context.Context, task *Task) error {
+	specs, err := fo.specEngine.LoadAllSpecs()
+	if err != nil {
+		return err
+	}
+	specObj, ok := specs[task.SpecID]
+	if !ok {
+		return fmt.Errorf("spec not found: %s", task.SpecID)
+	}
+
 	specPrompt, contextStr, contextCount, err := fo.buildTaskParts(ctx, task.SpecID)
 	if err != nil {
 		return err
@@ -595,10 +668,15 @@ func (fo *FactoryOrchestrator) executeGenerate(ctx context.Context, task *Task) 
 
 	maxAttempts := evalMaxAttempts()
 	prompt := fullPrompt
-	var output string
-	var verdict *eval.EvaluationResult
-	var judgeNote string
-	attempts := 0
+	var (
+		output       string
+		verdict      *eval.EvaluationResult
+		verification *verify.VerificationResult
+		ws           *workspace.Workspace
+		judgeNote    string
+		attempts     int
+	)
+	wsMgr := workspace.NewWorkspaceManager(fo.verifier.WorkingDir)
 
 	for {
 		attempts++
@@ -611,6 +689,38 @@ func (fo *FactoryOrchestrator) executeGenerate(ctx context.Context, task *Task) 
 			return fmt.Errorf("llm generate task: %w", err)
 		}
 
+		// Tier 1: Materialize & verify compilable Go artifacts inside an isolated workspace.
+		if artifacts := harness.ParseArtifacts(output); len(artifacts) > 0 {
+			if ws == nil {
+				ws, err = wsMgr.CreateModuleWorkspace(task.ID, "")
+				if err != nil {
+					return fmt.Errorf("provisioning isolated workspace: %w", err)
+				}
+			}
+			if _, applyErr := ws.ApplyArtifacts(artifacts); applyErr != nil {
+				return fmt.Errorf("applying workspace artifacts: %w", applyErr)
+			}
+			verification, _ = fo.verifier.WithWorkingDir(ws.Dir).RunVerificationForSpec(ctx, "", specObj)
+			if verification != nil && !verification.Success {
+				if attempts < maxAttempts {
+					prompt = verify.GenerateFixPrompt(verification, fullPrompt)
+					continue
+				}
+				task.Result = map[string]interface{}{
+					"output":        output,
+					"spec_id":       task.SpecID,
+					"attempts":      attempts,
+					"verified":      false,
+					"workspace_dir": ws.Dir,
+					"files_written": ws.FilesWritten,
+					"diff":          ws.DiffSummary(),
+					"verification":  verification,
+				}
+				return fmt.Errorf("workspace verification failed after %d attempt(s)", attempts)
+			}
+		}
+
+		// Tier 2: LLM-as-a-judge rubric evaluation.
 		if fo.evaluator == nil {
 			break
 		}
@@ -621,7 +731,6 @@ func (fo *FactoryOrchestrator) executeGenerate(ctx context.Context, task *Task) 
 			return evalErr
 		})
 		if evalErr != nil {
-			// The artifact was produced; a broken judge should not discard it.
 			judgeNote = fmt.Sprintf("evaluation skipped: %v", evalErr)
 			log.Printf("factory: task %s: %s", task.ID, judgeNote)
 			break
@@ -642,8 +751,16 @@ func (fo *FactoryOrchestrator) executeGenerate(ctx context.Context, task *Task) 
 		"output":        output,
 		"spec_id":       task.SpecID,
 		"context_items": contextCount,
+		"provider":      fo.agentProvider,
 		"model":         fo.agentModel,
 		"attempts":      attempts,
+	}
+	if ws != nil {
+		result["workspace_dir"] = ws.Dir
+		result["files_written"] = ws.FilesWritten
+		result["diff"] = ws.DiffSummary()
+		result["verified"] = verification != nil && verification.Success
+		result["verification"] = verification
 	}
 	if verdict != nil {
 		result["evaluation"] = evaluationView(verdict)

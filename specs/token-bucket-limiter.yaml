@@ -1,0 +1,29 @@
+id: "spec-token-bucket"
+version: "1.0"
+title: "Concurrent Token-Bucket Rate Limiter"
+description: "Thread-safe token-bucket rate limiter supporting burst capacity and continuous time-based token refill"
+intent:
+  goal: "Implement a zero-dependency, race-free Go token-bucket rate limiter with configurable capacity and refill rate"
+  context: "Used by API gateways and worker pools to enforce request rate limits safely under concurrent load"
+  success_criteria:
+    - "Compiles cleanly with go build ./..."
+    - "Passes go test -race -v ./... including concurrent goroutine stress tests"
+    - "Rejects non-positive capacity or refill rate with an explicit error"
+  anti_goals:
+    - "Background goroutine leaks per limiter instance"
+constraints:
+  - id: "no-unsafe"
+    type: "must_not"
+    description: "unsafe.Pointer"
+steps:
+  - id: "step-model"
+    name: "Define TokenBucket Struct & Config Validation"
+    description: "Model capacity, available tokens, refill rate per second, and mutex protection"
+  - id: "step-allow"
+    name: "Implement Allow & AllowN"
+    description: "Compute elapsed refill deterministically and deduct tokens atomically"
+    depends_on: ["step-model"]
+  - id: "step-tests"
+    name: "Write Burst, Refill & Race Tests"
+    description: "Verify burst exhaustion, time-based refill, invalid config errors, and 100-goroutine concurrency"
+    depends_on: ["step-allow"]

@@ -19,18 +19,18 @@ type PersistenceManager struct {
 
 // TaskRecord represents a task persisted to storage
 type TaskRecord struct {
-	ID          string    `json:"id"`
-	Type        string    `json:"type"`
-	SpecID      string    `json:"spec_id"`
-	Priority    int       `json:"priority"`
-	Status      string    `json:"status"`
-	AssignedTo  string    `json:"assigned_to"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	Type        string     `json:"type"`
+	SpecID      string     `json:"spec_id"`
+	Priority    int        `json:"priority"`
+	Status      string     `json:"status"`
+	AssignedTo  string     `json:"assigned_to"`
+	CreatedAt   time.Time  `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
-	Result      []byte    `json:"result"`
-	Error       string    `json:"error"`
-	Retries     int       `json:"retries"`
+	Result      []byte     `json:"result"`
+	Error       string     `json:"error"`
+	Retries     int        `json:"retries"`
 }
 
 // WorkerRecord represents a worker persisted to storage
@@ -49,16 +49,21 @@ func NewPersistenceManager(dataDir string) (*PersistenceManager, error) {
 	}
 
 	dbPath := filepath.Join(dataDir, "factory.db")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
+	return NewPersistenceManagerWithDB(db)
+}
+
+// NewPersistenceManagerWithDB wraps an existing SQLite *sql.DB handle so
+// FactoryOrchestrator and Clean Architecture repositories share one store.
+func NewPersistenceManagerWithDB(db *sql.DB) (*PersistenceManager, error) {
 	pm := &PersistenceManager{db: db}
 	if err := pm.initSchema(); err != nil {
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
-
 	return pm, nil
 }
 

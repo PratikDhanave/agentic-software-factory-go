@@ -10,7 +10,14 @@ func testMachine() *Machine {
 		"pending": {"running"},
 		"running": {"completed", "failed"},
 		"failed":  {"pending"},
-	})
+	}).WithCategory("execution").
+		WithDescription("Worker task lifecycle").
+		WithStateDescriptions(map[State]string{
+			"pending":   "Queued for dispatch",
+			"running":   "Leased by worker",
+			"completed": "Finished cleanly",
+			"failed":    "Retryable failure",
+		})
 }
 
 func TestTransitions(t *testing.T) {
@@ -44,6 +51,34 @@ func TestTransitions(t *testing.T) {
 		if err := m.Validate(tr[0], tr[1]); err == nil {
 			t.Errorf("expected validation error for %s -> %s", tr[0], tr[1])
 		}
+	}
+}
+
+func TestTransitionHelpersAndInspect(t *testing.T) {
+	m := testMachine()
+
+	var cur State
+	if err := m.Transition(&cur, "running"); err != nil {
+		t.Fatalf("expected empty state to start at initial and transition to running, got %v", err)
+	}
+	if cur != "running" {
+		t.Fatalf("expected running, got %s", cur)
+	}
+	if err := m.Transition(&cur, "pending"); err == nil {
+		t.Fatal("expected running -> pending to be rejected")
+	}
+
+	raw := "running"
+	if err := m.TransitionString(&raw, "completed"); err != nil {
+		t.Fatalf("unexpected TransitionString error: %v", err)
+	}
+	if raw != "completed" {
+		t.Fatalf("expected completed, got %s", raw)
+	}
+
+	insp := m.Inspect("running")
+	if !insp.IsValid || insp.IsTerminal || len(insp.AllowedNext) != 2 {
+		t.Fatalf("unexpected inspect output: %+v", insp)
 	}
 }
 
@@ -85,6 +120,9 @@ func TestExports(t *testing.T) {
 	exp := m.Export()
 	if exp.Initial != "pending" || len(exp.Terminal) != 1 || exp.Terminal[0] != "completed" {
 		t.Errorf("unexpected export: %+v", exp)
+	}
+	if exp.Category != "execution" || exp.Description == "" || exp.Mermaid == "" {
+		t.Errorf("expected metadata in export, got %+v", exp)
 	}
 	if !strings.Contains(m.JSON(), `"name": "task"`) {
 		t.Error("JSON export missing machine name")

@@ -3,125 +3,128 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
+var startedAt = time.Now()
+
 type DashboardStats struct {
-	System   map[string]interface{} `json:"system"`
-	Triage   map[string]interface{} `json:"triage"`
-	Tools    map[string]interface{} `json:"tools"`
-	MCP      map[string]interface{} `json:"mcp"`
-	Agents   map[string]interface{} `json:"agents"`
+	System map[string]interface{} `json:"system"`
+	Triage map[string]interface{} `json:"triage"`
+	Tools  map[string]interface{} `json:"tools"`
+	MCP    map[string]interface{} `json:"mcp"`
+	Agents map[string]interface{} `json:"agents"`
 }
 
-// HandleDashboard returns comprehensive statistics
+// HandleDashboard returns live statistics backed by SQLite instead of static placeholders.
 func HandleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	dbCounts := map[string]interface{}{}
+	totalDecisions := 0
+	pendingApprovals := 0
+	totalWorkflows := 0
+	if sqliteStore != nil {
+		if s, err := sqliteStore.Stats(r.Context()); err == nil {
+			dbCounts = s
+			if v, ok := s["total_agent_decisions"].(int); ok {
+				totalDecisions = v
+			}
+			if v, ok := s["pending_approvals"].(int); ok {
+				pendingApprovals = v
+			}
+			if v, ok := s["total_workflows"].(int); ok {
+				totalWorkflows = v
+			}
+		}
+	}
 
 	stats := DashboardStats{
 		System: map[string]interface{}{
 			"status":      "running",
-			"version":     "1.0.0",
-			"uptime":      "24h 15m",
-			"environment": "production",
+			"version":     "2.0.0",
+			"uptime":      time.Since(startedAt).Round(time.Second).String(),
+			"persistence": "sqlite3-wal",
+			"db":          dbCounts,
 		},
 		Triage: map[string]interface{}{
-			"total_analyzed":    127,
-			"ready_count":       89,
-			"not_ready_count":   38,
-			"by_category": map[string]int{
-				"feature":       45,
-				"bug":           32,
-				"refactor":      28,
-				"documentation": 22,
-			},
-			"by_priority": map[string]int{
-				"critical": 12,
-				"high":     34,
-				"medium":   56,
-				"low":      25,
-			},
+			"total_analyzed":    totalDecisions,
+			"pending_approvals": pendingApprovals,
+			"total_workflows":   totalWorkflows,
 		},
 		Tools: map[string]interface{}{
-			"available": 9,
-			"github_tools": []string{
-				"get_issue",
-				"create_issue",
-				"add_labels",
-				"post_comment",
-				"create_pr",
-				"get_pulls",
-				"merge_pr",
-				"get_releases",
-				"create_release",
+			"available": 7,
+			"mcp_tools": []string{
+				"submit_task",
+				"get_task_result",
+				"get_factory_status",
+				"list_specs",
+				"get_spec",
+				"list_agents",
+				"run_verification",
 			},
 		},
 		MCP: map[string]interface{}{
-			"protocol":    "JSON-RPC 2.0",
-			"status":      "active",
-			"connections": 3,
-			"rpc_calls":   542,
+			"protocol": "JSON-RPC 2.0",
+			"status":   "active",
 		},
 		Agents: map[string]interface{}{
-			"active_agents":   5,
-			"llm_agent":       "ready",
-			"mcp_agent":       "ready",
-			"reasoning_engine": "enhanced",
+			"active_agents": 10,
+			"status":        "ready",
 		},
 	}
 
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(stats)
+	_ = json.NewEncoder(w).Encode(stats)
 }
 
-// HandleHealth returns health status
+// HandleHealth returns live health status including SQLite connectivity.
 func HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	storageHealthy := false
+	if sqliteStore != nil {
+		h := sqliteStore.Health(r.Context())
+		storageHealthy = h["status"] == "healthy"
+	}
+
+	status := "healthy"
+	if !storageHealthy && sqliteStore != nil {
+		status = "degraded"
+	}
+
 	health := map[string]interface{}{
-		"status":    "healthy",
-		"timestamp": "2026-11-17T10:30:00Z",
+		"status":    status,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
 		"checks": map[string]bool{
-			"api":      true,
-			"mcp":      true,
-			"agents":   true,
-			"storage":  true,
-			"github":   true,
+			"api":     true,
+			"mcp":     true,
+			"agents":  true,
+			"storage": storageHealthy,
 		},
 	}
 
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(health)
+	_ = json.NewEncoder(w).Encode(health)
 }
 
-// HandleSystemMetrics returns detailed metrics
+// HandleSystemMetrics returns live metrics from the metrics collector and SQLite store.
 func HandleSystemMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	metrics := map[string]interface{}{
-		"http_requests": map[string]interface{}{
-			"total":        1842,
-			"per_second":   0.021,
-			"success_rate": 0.987,
-		},
-		"mcp_calls": map[string]interface{}{
-			"total":   542,
-			"success": 528,
-			"failed":  14,
-		},
-		"tool_usage": map[string]int{
-			"get_issue":      234,
-			"create_issue":   89,
-			"add_labels":     156,
-			"post_comment":   112,
-			"create_pr":      42,
-		},
-		"response_times": map[string]interface{}{
-			"p50": 125,  // ms
-			"p95": 456,  // ms
-			"p99": 1200, // ms
-		},
+	res := map[string]interface{}{
+		"uptime_seconds": int(time.Since(startedAt).Seconds()),
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+	}
+	if metricsCollector != nil {
+		res["collector"] = metricsCollector.GetMetrics()
+	}
+	if sqliteStore != nil {
+		if stats, err := sqliteStore.Stats(r.Context()); err == nil {
+			res["database"] = stats
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(metrics)
+	_ = json.NewEncoder(w).Encode(res)
 }

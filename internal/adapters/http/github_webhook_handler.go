@@ -11,14 +11,22 @@ import (
 	"strings"
 )
 
+// IssueComment represents a GitHub issue/PR comment payload.
+type GitHubComment struct {
+	ID   int64       `json:"id"`
+	Body string      `json:"body"`
+	User *GitHubUser `json:"user"`
+}
+
 // GitHubWebhookEvent represents a GitHub webhook event
 type GitHubWebhookEvent struct {
-	Action     string                 `json:"action"`
-	Number     int                    `json:"number"`
-	PullRequest *GitHubPullRequest     `json:"pull_request"`
-	Issue      *GitHubIssue           `json:"issue"`
-	Repository *GitHubRepository      `json:"repository"`
-	Sender     *GitHubUser            `json:"sender"`
+	Action      string             `json:"action"`
+	Number      int                `json:"number"`
+	PullRequest *GitHubPullRequest `json:"pull_request"`
+	Issue       *GitHubIssue       `json:"issue"`
+	Comment     *GitHubComment     `json:"comment"`
+	Repository  *GitHubRepository  `json:"repository"`
+	Sender      *GitHubUser        `json:"sender"`
 }
 
 type GitHubPullRequest struct {
@@ -108,9 +116,8 @@ func (h *GitHubWebhookHandler) VerifySignature(payload []byte, signature string)
 
 // HandleWebhook processes GitHub webhook events
 func (h *GitHubWebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
-	// Verify signature
 	signature := r.Header.Get("X-Hub-Signature-256")
-	if signature == "" {
+	if h.secret != "" && signature == "" {
 		http.Error(w, "missing signature", http.StatusUnauthorized)
 		return
 	}
@@ -174,6 +181,10 @@ func (h *GitHubWebhookHandler) handlePREvent(event *GitHubWebhookEvent) *GitHubW
 		return nil
 	}
 
+	repo := repoName(event.Repository)
+	author := userLogin(event.PullRequest.User)
+	branch := refName(event.PullRequest.Head)
+
 	switch event.Action {
 	case "opened":
 		if !event.PullRequest.Draft {
@@ -183,13 +194,13 @@ func (h *GitHubWebhookHandler) handlePREvent(event *GitHubWebhookEvent) *GitHubW
 				Number:     event.PullRequest.Number,
 				Title:      event.PullRequest.Title,
 				Body:       event.PullRequest.Body,
-				Repository: event.Repository.Name,
-				Author:     event.PullRequest.User.Login,
+				Repository: repo,
+				Author:     author,
 				Agent:      "Review",
 				Skill:      "code-review",
 				Metadata: map[string]interface{}{
 					"url":    event.PullRequest.ID,
-					"branch": event.PullRequest.Head.Ref,
+					"branch": branch,
 				},
 			}
 		}
@@ -201,8 +212,8 @@ func (h *GitHubWebhookHandler) handlePREvent(event *GitHubWebhookEvent) *GitHubW
 			Number:     event.PullRequest.Number,
 			Title:      event.PullRequest.Title,
 			Body:       event.PullRequest.Body,
-			Repository: event.Repository.Name,
-			Author:     event.PullRequest.User.Login,
+			Repository: repo,
+			Author:     author,
 			Agent:      "Review",
 			Skill:      "code-review",
 		}
@@ -214,8 +225,8 @@ func (h *GitHubWebhookHandler) handlePREvent(event *GitHubWebhookEvent) *GitHubW
 			Number:     event.PullRequest.Number,
 			Title:      event.PullRequest.Title,
 			Body:       event.PullRequest.Body,
-			Repository: event.Repository.Name,
-			Author:     event.PullRequest.User.Login,
+			Repository: repo,
+			Author:     author,
 			Agent:      "Review",
 			Skill:      "code-review",
 		}
@@ -230,6 +241,9 @@ func (h *GitHubWebhookHandler) handleIssueEvent(event *GitHubWebhookEvent) *GitH
 		return nil
 	}
 
+	repo := repoName(event.Repository)
+	author := userLogin(event.Issue.User)
+
 	switch event.Action {
 	case "opened":
 		return &GitHubWorkflowTrigger{
@@ -238,8 +252,8 @@ func (h *GitHubWebhookHandler) handleIssueEvent(event *GitHubWebhookEvent) *GitH
 			Number:     event.Issue.Number,
 			Title:      event.Issue.Title,
 			Body:       event.Issue.Body,
-			Repository: event.Repository.Name,
-			Author:     event.Issue.User.Login,
+			Repository: repo,
+			Author:     author,
 			Agent:      "Triage",
 			Skill:      "triage-issue",
 			Metadata: map[string]interface{}{
@@ -257,8 +271,8 @@ func (h *GitHubWebhookHandler) handleIssueEvent(event *GitHubWebhookEvent) *GitH
 				Number:     event.Issue.Number,
 				Title:      event.Issue.Title,
 				Body:       event.Issue.Body,
-				Repository: event.Repository.Name,
-				Author:     event.Issue.User.Login,
+				Repository: repo,
+				Author:     author,
 				Agent:      "Review",
 				Skill:      "review-spec",
 			}
@@ -276,8 +290,8 @@ func (h *GitHubWebhookHandler) handlePRReviewEvent(event *GitHubWebhookEvent) *G
 			EventID:    fmt.Sprintf("pr-%d-reviewed", event.PullRequest.ID),
 			Number:     event.PullRequest.Number,
 			Title:      event.PullRequest.Title,
-			Repository: event.Repository.Name,
-			Author:     event.Sender.Login,
+			Repository: repoName(event.Repository),
+			Author:     userLogin(event.Sender),
 			Agent:      "Foreman",
 			Skill:      "merge-decision",
 		}
@@ -287,8 +301,23 @@ func (h *GitHubWebhookHandler) handlePRReviewEvent(event *GitHubWebhookEvent) *G
 
 // handleIssueCommentEvent routes issue comment events
 func (h *GitHubWebhookHandler) handleIssueCommentEvent(event *GitHubWebhookEvent) *GitHubWorkflowTrigger {
-	// Could trigger workflows based on comment mentions
-	// E.g., "@factory review" triggers review workflow
+	if event.Action != "created" || event.Comment == nil || event.Issue == nil {
+		return nil
+	}
+	bodyLower := strings.ToLower(event.Comment.Body)
+	if strings.Contains(bodyLower, "@factory") {
+		return &GitHubWorkflowTrigger{
+			Type:       "issue-comment-command",
+			EventID:    fmt.Sprintf("comment-%d", event.Comment.ID),
+			Number:     event.Issue.Number,
+			Title:      event.Issue.Title,
+			Body:       event.Comment.Body,
+			Repository: repoName(event.Repository),
+			Author:     userLogin(event.Comment.User),
+			Agent:      "Foreman",
+			Skill:      "triage-issue",
+		}
+	}
 	return nil
 }
 
@@ -298,6 +327,30 @@ func (h *GitHubWebhookHandler) GetTriggerChannel() <-chan *GitHubWorkflowTrigger
 }
 
 // Helper functions
+func repoName(repo *GitHubRepository) string {
+	if repo == nil {
+		return ""
+	}
+	if repo.Owner != nil && repo.Owner.Login != "" {
+		return repo.Owner.Login + "/" + repo.Name
+	}
+	return repo.Name
+}
+
+func userLogin(user *GitHubUser) string {
+	if user == nil {
+		return ""
+	}
+	return user.Login
+}
+
+func refName(ref *GitHubRef) string {
+	if ref == nil {
+		return ""
+	}
+	return ref.Ref
+}
+
 func labelsToStrings(labels []GitHubLabel) []string {
 	result := make([]string, len(labels))
 	for i, l := range labels {
