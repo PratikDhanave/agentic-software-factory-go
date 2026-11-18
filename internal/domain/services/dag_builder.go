@@ -10,12 +10,6 @@ type DAGBuilder struct {
 	logger Logger
 }
 
-type Logger interface {
-	Info(msg string, fields ...interface{})
-	Error(msg string, err error, fields ...interface{})
-	Debug(msg string, fields ...interface{})
-}
-
 func NewDAGBuilder(logger Logger) *DAGBuilder {
 	return &DAGBuilder{
 		logger: logger,
