@@ -157,7 +157,72 @@ curl http://localhost:8080/api/agents/metrics
 
 ---
 
-## Complete End-to-End Example
+## System Architecture Diagrams
+
+### High-Level System Overview
+
+```mermaid
+graph TB
+    UI["Web UI<br/>(Next.js)"]
+    HTTP["HTTP Server<br/>(Go)"]
+    
+    UI -->|HTTP + SSE| HTTP
+    
+    HTTP --> WH["Webhook Handler<br/>(GitHub Integration)"]
+    HTTP --> JH["Job Handler<br/>(Status API)"]
+    
+    WH --> SUBMIT["Submit Job<br/>(Use Case)"]
+    JH --> GET_JOB["Get Job Status<br/>(Use Case)"]
+    
+    SUBMIT --> JR["Job Repository"]
+    GET_JOB --> JR
+    
+    SUBMIT --> EB["Event Bus<br/>(Pub/Sub)"]
+    
+    JR --> DB[(("PostgreSQL<br/>Database"))]
+    
+    HTTP --> OBS["Observability<br/>(Logging + Tracing)"]
+    WH --> OBS
+    JH --> OBS
+    SUBMIT --> OBS
+```
+
+### Clean Architecture Layers
+
+```mermaid
+graph TB
+    subgraph HTTP["Adapters: HTTP + Database"]
+        WH["WebhookHandler"]
+        JH["JobHandler"]
+        REPO["Repository Implementations"]
+    end
+    
+    subgraph UC["Application: Use Cases"]
+        SUBMIT["SubmitJobUseCase"]
+        GET["GetJobStatusUseCase"]
+        TRIAGE["IssueTriageUseCase"]
+    end
+    
+    subgraph Domain["Domain: Business Rules"]
+        Job["Job Entity"]
+        Workflow["Workflow Entity"]
+        Logger["Logger Interface"]
+        Repo["Repository Interface"]
+    end
+    
+    subgraph Infra["Infrastructure: DI + Cross-Cutting"]
+        BOOT["Bootstrap"]
+        LOG["StructuredLogger"]
+        TRACE["TraceProvider"]
+        OBS["Observability"]
+    end
+    
+    HTTP --> UC
+    UC --> Domain
+    Domain --> Infra
+```
+
+### Complete End-to-End Example
 
 See how the system processes a GitHub webhook with automatic logging and tracing:
 
@@ -281,7 +346,291 @@ Total: 18ms
 
 **Full documentation**: See `docs/EXAMPLE_END_TO_END.md` for complete 10-step walkthrough with code snippets, SQL execution, and error scenarios.
 
+### Request Processing Flow
+
+```mermaid
+sequenceDiagram
+    actor GitHub
+    participant Server as "HTTP Server"
+    participant Handler as "WebhookHandler"
+    participant UC as "SubmitJobUseCase"
+    participant Repo as "Repository"
+    participant DB as "PostgreSQL"
+    participant Logger as "StructuredLogger"
+    
+    GitHub->>Server: POST /webhook (GitHub Issue)
+    
+    Server->>Handler: ParseAndValidate()
+    Handler->>Logger: Info("Webhook received")
+    
+    Handler->>UC: Execute(ctx, job)
+    UC->>Repo: Save(ctx, job)
+    Repo->>DB: INSERT INTO jobs
+    DB-->>Repo: success
+    Repo-->>UC: nil
+    
+    UC->>Logger: Info("job submitted")
+    UC-->>Handler: success
+    
+    Handler-->>Server: HTTP 202 Accepted
+    Server-->>GitHub: Response
+```
+
+### Observability Instrumentation Flow
+
+```mermaid
+sequenceDiagram
+    participant Handler as "Handler"
+    participant Observer as "UseCaseObserver"
+    participant Span as "SpanContext"
+    participant Logger as "Logger"
+    participant Tracer as "Tracer"
+    
+    Handler->>Observer: ObserveExecution(ctx, name, fn)
+    
+    Observer->>Tracer: Start(ctx, operation)
+    Tracer-->>Observer: (ctx, span)
+    
+    Observer->>Logger: Info("use case started")
+    Observer->>Span: Create SpanContext
+    
+    Observer->>Span: Call fn(span)
+    Span->>Span: Business logic
+    Span->>Logger: LoggingCalls
+    
+    Span-->>Observer: result/error
+    
+    Observer->>Logger: Info("use case completed")
+    Observer->>Tracer: span.End()
+    Tracer->>Tracer: Output trace
+    
+    Observer-->>Handler: success
+```
+
+### Database Schema
+
+```mermaid
+graph TB
+    JOBS["jobs table"]
+    
+    JOBS -->|id| PK["UUID<br/>Primary Key"]
+    JOBS -->|type| TYPE["VARCHAR<br/>job type"]
+    JOBS -->|status| STATUS["VARCHAR<br/>created/queued/completed"]
+    JOBS -->|priority| PRIO["INT<br/>1-10 scale"]
+    JOBS -->|input| INPUT["JSONB<br/>job parameters"]
+    JOBS -->|created_at| CREATED["TIMESTAMP"]
+    
+    INDEXES["Indexes"]
+    INDEXES -->|idx1| "idx_jobs_status"
+    INDEXES -->|idx2| "idx_jobs_type"
+    INDEXES -->|idx3| "idx_jobs_created_at"
+```
+
+### Job Lifecycle State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED: Job created<br/>via webhook
+    
+    CREATED --> QUEUED: Save to<br/>repository
+    
+    QUEUED --> PROCESSING: Executor<br/>picks up
+    
+    PROCESSING --> COMPLETED: Work<br/>finished
+    
+    PROCESSING --> FAILED: Error<br/>occurred
+    
+    FAILED --> QUEUED: Retry<br/>enabled
+    
+    COMPLETED --> [*]
+    FAILED --> [*]
+```
+
+### Logging Output Timeline
+
+```mermaid
+graph LR
+    T0["t=0ms<br/>Webhook<br/>arrives"]
+    T1["t=1ms<br/>Handler<br/>starts<br/><br/>[INFO] Webhook<br/>received"]
+    T2["t=2ms<br/>Observer<br/>starts<br/><br/>[INFO] use case<br/>started"]
+    T3["t=3ms<br/>Validation<br/>passes<br/><br/>[INFO] job<br/>validated"]
+    T4["t=15ms<br/>DB query<br/>completes<br/><br/>[INFO] Job<br/>persisted"]
+    T5["t=18ms<br/>Complete<br/><br/>[INFO] use case<br/>completed in 17ms"]
+    
+    T0 --> T1 --> T2 --> T3 --> T4 --> T5
+```
+
+### Concurrent Request Handling
+
+```mermaid
+graph TB
+    WH1["Webhook 1<br/>Issue opened"]
+    WH2["Webhook 2<br/>PR created"]
+    WH3["Webhook 3<br/>Code pushed"]
+    
+    SERVER["HTTP Server<br/>(Goroutine pool)"]
+    
+    H1["Handler 1"]
+    H2["Handler 2"]
+    H3["Handler 3"]
+    
+    UC1["UseCase 1"]
+    UC2["UseCase 2"]
+    UC3["UseCase 3"]
+    
+    DB[(("PostgreSQL<br/>Connection Pool"))]
+    
+    LOG["Logger<br/>(Thread-safe)"]
+    
+    WH1 -->|concurrent| SERVER
+    WH2 -->|concurrent| SERVER
+    WH3 -->|concurrent| SERVER
+    
+    SERVER -->|route| H1
+    SERVER -->|route| H2
+    SERVER -->|route| H3
+    
+    H1 -->|execute| UC1
+    H2 -->|execute| UC2
+    H3 -->|execute| UC3
+    
+    UC1 -->|query| DB
+    UC2 -->|query| DB
+    UC3 -->|query| DB
+    
+    H1 -->|log| LOG
+    H2 -->|log| LOG
+    H3 -->|log| LOG
+```
+
+### Tracing & Logging Integration
+
+```mermaid
+graph TB
+    APP["Application Layer"]
+    
+    OBS["Observability Facade"]
+    
+    LOGGER["StructuredLogger"]
+    TRACER["TraceProvider"]
+    
+    LOGIMPL["Logger Implementation<br/>(Structured output)"]
+    TRACEPROV["Trace Implementations"]
+    
+    NOOP["NoOpTracer<br/>(No-op)"]
+    SIMPLE["SimpleTracer<br/>(stdout)"]
+    FUTURE["OTLP Exporter<br/>(future)"]
+    
+    OUTPUT["Output"]
+    
+    LOGFILE["[INFO] message | field=value"]
+    TRACEFILE["[TRACE] span=... status=..."]
+    
+    APP -->|uses| OBS
+    
+    OBS -->|wraps| LOGGER
+    OBS -->|wraps| TRACER
+    
+    LOGGER -->|implements| LOGIMPL
+    TRACER -->|provides| TRACEPROV
+    
+    TRACEPROV -->|implementation| NOOP
+    TRACEPROV -->|implementation| SIMPLE
+    TRACEPROV -->|implementation| FUTURE
+    
+    LOGIMPL -->|outputs| LOGFILE
+    SIMPLE -->|outputs| TRACEFILE
+    
+    LOGFILE -->|to| OUTPUT
+    TRACEFILE -->|to| OUTPUT
+```
+
 ---
+
+### Performance: Latency Breakdown
+
+```mermaid
+graph LR
+    START["Request Start"]
+    
+    PARSE["Parse<br/>1ms"]
+    VALIDATE["Validate<br/>1ms"]
+    LOG1["Log Start<br/>1ms"]
+    TRACE1["Trace Start<br/>1ms"]
+    
+    DB["Database<br/>Query<br/>12ms"]
+    
+    PROCESS["Process<br/>1ms"]
+    LOG2["Log End<br/>1ms"]
+    TRACE2["Trace End<br/>1ms"]
+    
+    RESP["Format Response<br/>1ms"]
+    
+    END["Response Sent<br/>18ms total"]
+    
+    START -->|parse| PARSE
+    PARSE -->|validate| VALIDATE
+    VALIDATE -->|log| LOG1
+    LOG1 -->|trace| TRACE1
+    
+    TRACE1 -->|query| DB
+    
+    DB -->|process| PROCESS
+    PROCESS -->|log| LOG2
+    LOG2 -->|trace| TRACE2
+    
+    TRACE2 -->|format| RESP
+    RESP -->|send| END
+    
+    style DB fill:#ff9999
+    style PARSE fill:#99ccff
+    style VALIDATE fill:#99ff99
+```
+
+### Error Handling & Recovery
+
+```mermaid
+graph TB
+    OP["Operation Execution"]
+    
+    TRY["Try Execute"]
+    
+    SUCCESS{Success?}
+    
+    YES["Return result<br/>Success path"]
+    
+    NO["Error occurred"]
+    
+    RECORD["Record error<br/>in span"]
+    LOG["Log error<br/>with context"]
+    RETRY{Retryable?}
+    
+    YESRETRY["Retry with<br/>backoff"]
+    NORETRY["Return error<br/>to caller"]
+    
+    END1["Success"]
+    END2["Failure"]
+    
+    OP -->|start| TRY
+    TRY -->|check| SUCCESS
+    
+    SUCCESS -->|yes| YES
+    YES -->|return| END1
+    
+    SUCCESS -->|no| NO
+    NO -->|capture| RECORD
+    RECORD -->|log| LOG
+    LOG -->|check| RETRY
+    
+    RETRY -->|yes| YESRETRY
+    YESRETRY -->|after delay| TRY
+    
+    RETRY -->|no| NORETRY
+    NORETRY -->|propagate| END2
+    
+    style END1 fill:#99ff99
+    style END2 fill:#ff9999
+```
 
 ## 7-Layer Architecture
 
