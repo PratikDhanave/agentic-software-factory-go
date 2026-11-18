@@ -10,13 +10,6 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain/entities"
 )
 
-// MockLogger implements LoggerInterface for testing
-type MockLogger struct{}
-
-func (m *MockLogger) Info(msg string, fields ...interface{})            {}
-func (m *MockLogger) Error(msg string, err error, fields ...interface{}) {}
-func (m *MockLogger) Debug(msg string, fields ...interface{})           {}
-
 // MockJobExecutor implements JobExecutor for testing
 type MockJobExecutor struct {
 	mu         sync.Mutex

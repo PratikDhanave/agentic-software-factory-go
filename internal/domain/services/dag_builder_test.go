@@ -6,12 +6,6 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain/entities"
 )
 
-type MockLogger struct{}
-
-func (m *MockLogger) Info(msg string, fields ...interface{})            {}
-func (m *MockLogger) Error(msg string, err error, fields ...interface{}) {}
-func (m *MockLogger) Debug(msg string, fields ...interface{})           {}
-
 func TestDAGBuilder_BuildSimpleLinearWorkflow(t *testing.T) {
 	logger := &MockLogger{}
 	builder := NewDAGBuilder(logger)
