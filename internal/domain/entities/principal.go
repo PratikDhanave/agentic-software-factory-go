@@ -14,6 +14,10 @@ const (
 	PrincipalService PrincipalType = "service"
 )
 
+func (pt PrincipalType) IsValid() bool {
+	return pt == PrincipalAgent || pt == PrincipalUser || pt == PrincipalService
+}
+
 type Action string
 
 const (
