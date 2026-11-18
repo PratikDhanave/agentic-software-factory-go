@@ -46,6 +46,38 @@ func (r *PostgresRepository) SaveMetric(ctx interface{}, metric *domain.AgentMet
 	return err
 }
 
+// SaveDecision stores an agent decision
+func (r *PostgresRepository) SaveDecision(ctx interface{}, decision *domain.AgentDecision) error {
+	query := `
+		INSERT INTO agent_decisions (id, execution_id, agent_role, decision, reasoning, confidence, approval_status, requires_approval, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`
+
+	c, ok := ctx.(context.Context)
+	if !ok {
+		c = context.Background()
+	}
+
+	status := decision.ApprovalStatus
+	if status == "" {
+		status = "pending"
+	}
+
+	_, err := r.db.ExecContext(c, query,
+		decision.ID,
+		decision.ExecutionID,
+		decision.AgentRole,
+		decision.Decision,
+		decision.Reasoning,
+		decision.Confidence,
+		status,
+		decision.RequiresApproval,
+		decision.CreatedAt,
+	)
+
+	return err
+}
+
 // SavePattern stores a learned pattern
 func (r *PostgresRepository) SavePattern(ctx interface{}, pattern *domain.LearnedPattern) error {
 	query := `

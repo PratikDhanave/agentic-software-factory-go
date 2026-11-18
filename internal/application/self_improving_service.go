@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,12 +70,40 @@ func (s *SelfImprovingService) RecordApproval(ctx context.Context, approval *dom
 	}
 
 	// Check if learning should trigger
-	recentCount, _ := s.repo.CountRecentDecisions(ctx, decision.AgentRole, s.decisionWindow)
-	if recentCount >= s.decisionWindow {
-		go s.LearnPatterns(context.Background(), decision.AgentRole)
+	if decision != nil {
+		recentCount, _ := s.repo.CountRecentDecisions(ctx, decision.AgentRole, s.decisionWindow)
+		if recentCount >= s.decisionWindow {
+			go s.LearnPatterns(context.Background(), decision.AgentRole)
+		}
 	}
 
 	return nil
+}
+
+// ShouldSkipApproval evaluates whether human approval can be bypassed based on
+// the active factory maturity phase (crawl | walk | run), confidence score, and
+// learned patterns.
+func (s *SelfImprovingService) ShouldSkipApproval(ctx context.Context, agentRole, issueType string, confidence float64, phase string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "crawl":
+		return false
+	case "run":
+		return confidence >= 0.70
+	default: // "walk" or unset
+		if confidence >= s.confidenceThreshold {
+			return true
+		}
+		patterns, _ := s.repo.FindPatterns(ctx, agentRole, issueType)
+		for _, p := range patterns {
+			if p.SuccessRate >= s.confidenceThreshold && confidence >= s.learningThreshold {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // RecordOutcome records the actual outcome (from GitHub/execution)
@@ -199,6 +228,9 @@ func (s *SelfImprovingService) CalibrateConfidence(ctx context.Context, agentRol
 
 		actualRate := float64(correct) / float64(len(binDecisions))
 		predictedRate := s.binMidpoint(binName)
+		if predictedRate <= 0 {
+			predictedRate = 0.5
+		}
 		calibration := actualRate / predictedRate
 
 		s.repo.SaveCalibration(ctx, &domain.ConfidenceCalibration{
@@ -452,5 +484,8 @@ type PatternMetrics struct {
 
 // Utility
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || (len(s) > 0 && len(substr) > 0))
+	if substr == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
