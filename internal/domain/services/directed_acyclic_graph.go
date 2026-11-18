@@ -15,6 +15,7 @@ type DAGNodeRef struct {
 	JobID     string
 	TaskName  string
 	DependsOn []string
+	Input     map[string]interface{}
 }
 
 // NewDirectedAcyclicGraph creates an empty DAG
@@ -35,6 +36,7 @@ func (dag *DirectedAcyclicGraph) AddNode(jobID, taskName string, dependsOn []str
 		JobID:     jobID,
 		TaskName:  taskName,
 		DependsOn: dependsOn,
+		Input:     make(map[string]interface{}),
 	}
 	dag.Edges[jobID] = make([]string, 0)
 	return nil
