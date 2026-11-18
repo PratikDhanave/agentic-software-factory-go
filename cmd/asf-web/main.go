@@ -412,34 +412,171 @@ func (s *webServer) handleWorkflowGenerate(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+
+	var req struct {
+		IssueTitle       string `json:"issue_title"`
+		IssueDescription string `json:"issue_description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	if req.IssueTitle == "" || req.IssueDescription == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "issue_title and issue_description required"})
+		return
+	}
+
+	// Generate real workflow decisions based on issue content
+	decisions := s.generateAgentDecisions(req.IssueTitle, req.IssueDescription)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"session_id":        "sess-" + fmt.Sprintf("%d", time.Now().Unix()),
-		"workflow_id":       "wf-001",
-		"workflow_name":     "Generated Workflow",
+		"workflow_id":       "wf-" + fmt.Sprintf("%x", time.Now().UnixNano()),
+		"workflow_name":     "Workflow: " + req.IssueTitle,
 		"status":            "created",
 		"requires_approval": false,
-		"decisions": []map[string]interface{}{
-			{
-				"agent_role": "Architect",
-				"decision":   "Implement OAuth token refresh mechanism",
-				"confidence": 0.95,
-				"reasoning":  "Issue indicates OAuth token not refreshing properly. Standard fix is to implement automatic token refresh with exponential backoff.",
-			},
-			{
-				"agent_role": "Developer",
-				"decision":   "Add retry logic with exponential backoff",
-				"confidence": 0.92,
-				"reasoning":  "Common pattern for handling transient failures in OAuth flows.",
-			},
-			{
-				"agent_role": "QA",
-				"decision":   "Create comprehensive test suite for token refresh",
-				"confidence": 0.88,
-				"reasoning":  "Critical auth functionality requires thorough testing including edge cases.",
-			},
-		},
+		"decisions":         decisions,
 		"pending_approvals": []string{},
 	})
+}
+
+// generateAgentDecisions creates workflow decisions based on issue analysis
+func (s *webServer) generateAgentDecisions(title, description string) []map[string]interface{} {
+	// Analyze issue to determine approach
+	isAuth := containsAny(description, []string{"auth", "oauth", "token", "login", "password"})
+	isPerf := containsAny(description, []string{"slow", "performance", "timeout", "latency", "speed"})
+	isData := containsAny(description, []string{"data", "database", "query", "migration", "schema"})
+	isSecurity := containsAny(description, []string{"security", "exploit", "vulnerability", "xss", "injection", "sql"})
+
+	decisions := []map[string]interface{}{}
+
+	// Architect decision
+	architectedDecision := generateArchitectDecision(title, description, isAuth, isPerf, isData, isSecurity)
+	decisions = append(decisions, architectedDecision)
+
+	// Developer decision
+	developerDecision := generateDeveloperDecision(title, description, isAuth, isPerf, isData, isSecurity)
+	decisions = append(decisions, developerDecision)
+
+	// QA decision
+	qaDecision := generateQADecision(title, description, isAuth, isPerf, isSecurity)
+	decisions = append(decisions, qaDecision)
+
+	// Security decision (if security-related)
+	if isSecurity {
+		securityDecision := map[string]interface{}{
+			"agent_role": "Security",
+			"decision":   "Conduct security audit and implement fixes",
+			"confidence": 0.94,
+			"reasoning":  "Security vulnerabilities require immediate audit and remediation to prevent exploitation.",
+		}
+		decisions = append(decisions, securityDecision)
+	}
+
+	// Performance decision (if perf-related)
+	if isPerf {
+		perfDecision := map[string]interface{}{
+			"agent_role": "Performance",
+			"decision":   "Profile and optimize bottleneck",
+			"confidence": 0.91,
+			"reasoning":  "Performance issues should be profiled to identify exact bottleneck before optimization.",
+		}
+		decisions = append(decisions, perfDecision)
+	}
+
+	return decisions
+}
+
+func generateArchitectDecision(title, desc string, isAuth, isPerf, isData, isSecurity bool) map[string]interface{} {
+	decision := "Review architecture and design solution"
+	confidence := 0.90
+	reasoning := "Requires architectural review to ensure solution aligns with system design."
+
+	if isAuth {
+		decision = "Implement secure authentication mechanism"
+		confidence = 0.95
+		reasoning = "Authentication issues require secure design patterns like token refresh, session management, or OAuth."
+	} else if isData {
+		decision = "Design database schema changes"
+		confidence = 0.92
+		reasoning = "Data-related issues need careful schema design to prevent data loss and maintain consistency."
+	} else if isSecurity {
+		decision = "Design security hardening approach"
+		confidence = 0.96
+		reasoning = "Security vulnerabilities need comprehensive architectural redesign to prevent future exploitation."
+	}
+
+	return map[string]interface{}{
+		"agent_role": "Architect",
+		"decision":   decision,
+		"confidence": confidence,
+		"reasoning":  reasoning,
+	}
+}
+
+func generateDeveloperDecision(title, desc string, isAuth, isPerf, isData, isSecurity bool) map[string]interface{} {
+	decision := "Implement fix and unit tests"
+	confidence := 0.88
+	reasoning := "Implementation should include comprehensive unit tests to prevent regression."
+
+	if isAuth {
+		decision = "Implement token refresh and retry logic"
+		confidence = 0.92
+		reasoning = "Common pattern for auth issues is implementing automatic token refresh with exponential backoff."
+	} else if isData {
+		decision = "Execute migration and backfill"
+		confidence = 0.89
+		reasoning = "Data migrations need careful execution with backfill for existing records."
+	} else if isPerf {
+		decision = "Optimize code hotspots"
+		confidence = 0.87
+		reasoning = "Performance optimization should target identified hotspots from profiling."
+	}
+
+	return map[string]interface{}{
+		"agent_role": "Developer",
+		"decision":   decision,
+		"confidence": confidence,
+		"reasoning":  reasoning,
+	}
+}
+
+func generateQADecision(title, desc string, isAuth, isPerf, isSecurity bool) map[string]interface{} {
+	decision := "Create comprehensive test suite"
+	confidence := 0.85
+	reasoning := "Quality assurance requires tests for happy path, edge cases, and error scenarios."
+
+	if isAuth {
+		decision = "Test auth flows including token refresh, expiry, and concurrent requests"
+		confidence = 0.90
+		reasoning = "Auth testing must cover token lifecycle, concurrent requests, and fallback scenarios."
+	} else if isSecurity {
+		decision = "Execute penetration testing and vulnerability assessment"
+		confidence = 0.93
+		reasoning = "Security vulnerabilities require comprehensive penetration testing to verify fix effectiveness."
+	} else if isPerf {
+		decision = "Execute performance benchmarks and load testing"
+		confidence = 0.89
+		reasoning = "Performance improvements need benchmarking to verify measurable gains under load."
+	}
+
+	return map[string]interface{}{
+		"agent_role": "QA",
+		"decision":   decision,
+		"confidence": confidence,
+		"reasoning":  reasoning,
+	}
+}
+
+func containsAny(text string, keywords []string) bool {
+	text = strings.ToLower(text)
+	for _, keyword := range keywords {
+		if strings.Contains(text, strings.ToLower(keyword)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *webServer) handlePendingApprovals(w http.ResponseWriter, r *http.Request) {
