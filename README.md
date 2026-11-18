@@ -157,6 +157,132 @@ curl http://localhost:8080/api/agents/metrics
 
 ---
 
+## Complete End-to-End Example
+
+See how the system processes a GitHub webhook with automatic logging and tracing:
+
+### What You Provide (Input)
+
+**Option 1: Real GitHub**
+```bash
+# Simply create a GitHub issue in your repository
+# The system automatically receives it and processes it
+```
+
+**Option 2: Test with curl**
+```bash
+curl -X POST http://localhost:8080/webhook \
+  -H "X-GitHub-Event: issues" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "opened",
+    "issue": {
+      "number": 42,
+      "title": "Fix authentication bug",
+      "body": "Users cannot login with OAuth tokens"
+    },
+    "repository": {
+      "full_name": "myorg/myrepo"
+    }
+  }'
+```
+
+### What You Get (Output)
+
+**HTTP Response (Immediate)**
+```json
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+
+{
+  "status": "accepted",
+  "job_id": "gh-webhook-1734594600000000000",
+  "job_type": "issue-triage"
+}
+```
+
+**Console Logging (Automatic)**
+```
+2026-11-18 10:30:01.001 [INFO] Webhook received | event_type=issues action=opened
+2026-11-18 10:30:01.002 [INFO] use case started | operation=submit-job job_id=gh-webhook-1734594600000000000 job_type=issue-triage
+2026-11-18 10:30:01.003 [INFO] job validated | id=gh-webhook-1734594600000000000 type=issue-triage
+2026-11-18 10:30:01.015 [INFO] Job persisted | id=gh-webhook-1734594600000000000 rows_affected=1
+2026-11-18 10:30:01.016 [INFO] Event published | event_type=JobSubmitted job_id=gh-webhook-1734594600000000000
+2026-11-18 10:30:01.017 [INFO] job submitted | id=gh-webhook-1734594600000000000 type=issue-triage
+2026-11-18 10:30:01.018 [INFO] use case completed in 17ms | operation=submit-job
+```
+
+**Tracing Output (Automatic)**
+```
+[TRACE] span=submit-job service=agentic-software-factory status=OK attributes=map[
+  operation:submit-job 
+  job_id:gh-webhook-1734594600000000000 
+  job_type:issue-triage 
+  event_type:opened 
+  issue_number:42 
+  repo:myorg/myrepo 
+  start_time:1734594601 
+  end_time:1734594618 
+  duration_ms:17
+]
+```
+
+**Query Job Status**
+```bash
+curl "http://localhost:8080/api/jobs/status?id=gh-webhook-1734594600000000000"
+```
+
+```json
+HTTP/1.1 200 OK
+
+{
+  "id": "gh-webhook-1734594600000000000",
+  "type": "issue-triage",
+  "status": "created",
+  "priority": 5,
+  "input": {
+    "action": "opened",
+    "issue": 42,
+    "repo": "myorg/myrepo",
+    "title": "Fix authentication bug",
+    "body": "Users cannot login with OAuth tokens"
+  },
+  "created_at": "2026-11-18T10:30:01Z",
+  "updated_at": "2026-11-18T10:30:01Z"
+}
+```
+
+### What Happened Inside (Automatically)
+
+```
+GitHub Webhook Received
+  ↓
+1. Handler parses webhook (1ms)
+2. Job entity created (1ms)
+3. Observability instrumentation starts (1ms)
+4. Job validation (1ms)
+5. Database persistence (12ms) ← Dominant latency
+6. Event published (1ms)
+7. Logging & tracing (1ms)
+8. Response sent (1ms)
+─────────────────────────
+Total: 18ms
+```
+
+### Key Features Demonstrated
+
+✅ **Automatic Logging**: 7 log entries generated automatically  
+✅ **Automatic Tracing**: Span created with duration tracking  
+✅ **Error Handling**: Errors logged with full context  
+✅ **Database Persistence**: Job saved to PostgreSQL  
+✅ **Event Publishing**: Events emitted for other systems  
+✅ **Minimal Overhead**: Observability adds only 2-3ms  
+✅ **No Coupling**: Use case doesn't know it's observed  
+
+**Full documentation**: See `docs/EXAMPLE_END_TO_END.md` for complete 10-step walkthrough with code snippets, SQL execution, and error scenarios.
+
+---
+
 ## 7-Layer Architecture
 
 ### High-Level Overview
