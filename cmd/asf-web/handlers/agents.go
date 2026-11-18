@@ -378,7 +378,7 @@ func TestDelete(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
-`, name, name, name, name, name, name, name, name)
+`, name, name, name, name, name, name, name)
 }
 
 // scoreCode calculates 0-100 score

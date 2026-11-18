@@ -226,12 +226,17 @@ func (h *CoordinationHandler) GetSessionStatus(w http.ResponseWriter, r *http.Re
 
 	summary, _ := h.interactiveHandler.ListDecisionsSummary(sessionID)
 
+	decisionsMap := map[string]interface{}{}
+	if summary != nil {
+		decisionsMap = summary
+	}
+
 	resp := SessionStatusResponse{
 		SessionID:              session.ID,
 		Status:                 string(session.Status),
 		TotalDecisions:         len(session.Decisions),
-		DecisionsRequiringApproval: summary["decisions_requiring_approval"].(int),
-		Decisions:              summary["decisions_summary"].([]map[string]interface{}),
+		DecisionsRequiringApproval: 0,
+		Decisions:              decisionsMap,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

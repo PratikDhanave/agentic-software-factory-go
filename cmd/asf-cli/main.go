@@ -105,7 +105,7 @@ func cmdTools() {
 }
 
 func printUsage() {
-	fmt.Println(`Agentic Software Factory CLI
+	fmt.Print(`Agentic Software Factory CLI
 
 Usage:
   asf-cli <command> [options]

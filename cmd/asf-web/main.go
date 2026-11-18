@@ -331,11 +331,9 @@ func (s *webServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *webServer) handleGitHubToken(w http.ResponseWriter, r *http.Request) {
-	token := os.Getenv("GITHUB_TOKEN")
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"token": token,
-		"loaded": token != "",
-	})
+	// Never expose tokens over HTTP - this is a security vulnerability
+	// If token is needed, pass it securely via environment or authenticated endpoints
+	http.Error(w, "Forbidden: token endpoint disabled for security reasons", http.StatusForbidden)
 }
 
 func (s *webServer) handleRoot(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain/entities"
@@ -14,6 +15,7 @@ type PolicyEngine struct {
 	policies          []*entities.Policy
 	rateLimits        map[string]*entities.RateLimitState
 	rateLimitConfigs  map[string]*entities.RateLimitConfig
+	rateLimitMu       sync.RWMutex
 	logger            Logger
 }
 
@@ -319,6 +321,8 @@ func (pe *PolicyEngine) checkRateLimit(principalID string) *entities.PolicyEvalu
 	}
 
 	key := principalID + ":default"
+
+	pe.rateLimitMu.Lock()
 	state, exists := pe.rateLimits[key]
 
 	if !exists || state.IsExpired() {
@@ -327,6 +331,8 @@ func (pe *PolicyEngine) checkRateLimit(principalID string) *entities.PolicyEvalu
 	}
 
 	count := state.Increment()
+	pe.rateLimitMu.Unlock()
+
 	if count > config.MaxCount {
 		result := entities.NewPolicyEvaluationResult(
 			entities.DecisionRateLimited,

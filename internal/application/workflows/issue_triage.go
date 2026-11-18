@@ -45,11 +45,6 @@ func (u *IssueTriageUseCase) Execute(ctx context.Context, workflow *entities.Wor
 		return nil, err
 	}
 
-	if err := u.workflowRepo.Save(ctx, workflow); err != nil {
-		u.logger.Error("failed to save workflow", err)
-		return nil, err
-	}
-
 	event := services.WorkflowStartedEvent{
 		WorkflowID:   workflow.ID,
 		WorkflowType: workflow.Type,
@@ -64,11 +59,6 @@ func (u *IssueTriageUseCase) Execute(ctx context.Context, workflow *entities.Wor
 		"labels":   result.Labels,
 	}, result.Confidence); err != nil {
 		u.logger.Error("failed to complete workflow", err)
-		return nil, err
-	}
-
-	if err := u.workflowRepo.Update(ctx, workflow); err != nil {
-		u.logger.Error("failed to update workflow", err)
 		return nil, err
 	}
 

@@ -18,7 +18,7 @@ func (b *BadExample) ProcessData(key string) error {
 	fmt.Println(val)
 
 	// Missing error handling
-	result := performOperation(val)
+	_ = performOperation(val)
 	return nil
 }
 

@@ -111,7 +111,10 @@ func (u *ExecuteWorkflowUseCase) Execute(ctx context.Context,
 	}
 
 	// Log summary
-	duration := time.Since(execution.StartedAt)
+	duration := time.Duration(0)
+	if execution.StartedAt != nil {
+		duration = time.Since(*execution.StartedAt)
+	}
 	u.logger.Info("workflow execution completed",
 		"execution_id", executionID,
 		"status", execution.Status,
