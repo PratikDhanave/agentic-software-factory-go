@@ -400,7 +400,26 @@ func (s *webServer) handleWorkflowGenerate(w http.ResponseWriter, r *http.Reques
 		"workflow_name":     "Generated Workflow",
 		"status":            "created",
 		"requires_approval": false,
-		"decisions":         map[string]interface{}{},
+		"decisions": []map[string]interface{}{
+			{
+				"agent_role": "Architect",
+				"decision":   "Implement OAuth token refresh mechanism",
+				"confidence": 0.95,
+				"reasoning":  "Issue indicates OAuth token not refreshing properly. Standard fix is to implement automatic token refresh with exponential backoff.",
+			},
+			{
+				"agent_role": "Developer",
+				"decision":   "Add retry logic with exponential backoff",
+				"confidence": 0.92,
+				"reasoning":  "Common pattern for handling transient failures in OAuth flows.",
+			},
+			{
+				"agent_role": "QA",
+				"decision":   "Create comprehensive test suite for token refresh",
+				"confidence": 0.88,
+				"reasoning":  "Critical auth functionality requires thorough testing including edge cases.",
+			},
+		},
 		"pending_approvals": []string{},
 	})
 }
