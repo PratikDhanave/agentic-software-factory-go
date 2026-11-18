@@ -1,4 +1,4 @@
-import AgentOrchestrator from '@/components/AgentOrchestrator';
+import AgentOrchestratorV2 from '@/components/AgentOrchestratorV2';
 
 export const metadata = {
   title: 'Agent Orchestrator | Agentic Software Factory',
@@ -6,5 +6,5 @@ export const metadata = {
 };
 
 export default function OrchestratorPage() {
-  return <AgentOrchestrator />;
+  return <AgentOrchestratorV2 />;
 }
