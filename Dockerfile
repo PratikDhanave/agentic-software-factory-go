@@ -1,51 +1,31 @@
-# Multi-stage build: Go backend
-FROM golang:1.21-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies
-RUN apk add --no-cache git
+RUN apk add --no-cache git gcc musl-dev sqlite-dev
 
-# Copy source
+COPY go.mod go.sum ./
+
+RUN go mod download
+
 COPY . .
 
-# Build server
-RUN CGO_ENABLED=0 GOOS=linux go build -o asf-web ./cmd/asf-web/
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /asf ./
 
-# Build CLI
-RUN CGO_ENABLED=0 GOOS=linux go build -o asf-cli ./cmd/asf-cli/
-
-# Final stage: Runtime
-FROM alpine:latest
+FROM alpine:3.20
 
 WORKDIR /app
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata curl
+RUN apk add --no-cache ca-certificates tzdata sqlite-libs
 
-# Copy binaries from builder
-COPY --from=builder /app/asf-web .
-COPY --from=builder /app/asf-cli .
+COPY --from=builder /asf /app/asf
 
-# Copy static assets
-COPY web-ui/public /app/web
-COPY mcp.json .
+RUN mkdir -p /data
 
-# Create data directory
-RUN mkdir -p /app/data
+EXPOSE 8080
 
-# Expose ports
-EXPOSE 8080 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD /app/asf help || exit 1
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8080/health || exit 1
-
-# Set environment variables
-ENV GITHUB_TOKEN="" \
-    OLLAMA_URL="http://ollama:11434" \
-    OLLAMA_MODEL="mistral" \
-    PORT=8080
-
-# Run server
-CMD ["./asf-web", "0.0.0.0:8080"]
+ENTRYPOINT ["/app/asf"]
+CMD []
