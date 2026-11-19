@@ -212,8 +212,8 @@ export default function AgentDagCanvas({
   return (
     <div className="space-y-4">
       {/* Interactive Vector DAG Canvas */}
-      <div className="ide-surface border ide-border rounded-lg overflow-hidden">
-        <div className="px-4 py-2.5 border-b ide-border ide-subtle flex flex-wrap items-center justify-between gap-2">
+      <div className="ide-surface border ide-border rounded-2xl overflow-hidden">
+        <div className="px-5 py-3 border-b ide-border ide-canvas flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold ide-ink">
               10-Agent Execution Topology
@@ -224,13 +224,13 @@ export default function AgentDagCanvas({
           </div>
           <div className="flex items-center gap-4 text-[11px] ide-ink-secondary">
             <span className="inline-flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-500" /> Verified
+              <span className="w-2 h-2 rounded-full bg-[#2F7A45]" /> Verified
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-blue-600" /> Running
+              <span className="w-2 h-2 rounded-full bg-[#181816]" /> Running
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-amber-500" /> Awaiting Approval
+              <span className="w-2 h-2 rounded-full bg-[#B87B19]" /> Needs Review
             </span>
           </div>
         </div>
@@ -291,11 +291,11 @@ export default function AgentDagCanvas({
 
               const stateBorder =
                 state === 'active'
-                  ? 'border-blue-500 ring-2 ring-blue-500/15'
+                  ? 'border-[#181816] ring-2 ring-black/10'
                   : state === 'gate'
-                    ? 'border-amber-500 ring-2 ring-amber-500/15'
+                    ? 'border-[#B87B19] ring-2 ring-[#B87B19]/15'
                     : state === 'done'
-                      ? 'border-emerald-500/60'
+                      ? 'border-[#285936]/60'
                       : 'ide-border';
 
               return (
@@ -309,8 +309,8 @@ export default function AgentDagCanvas({
                     width: `${NODE_W}px`,
                     height: `${NODE_H}px`,
                   }}
-                  className={`absolute text-left rounded-lg ide-surface border px-3 py-2 shadow-sm transition hover:shadow-md flex flex-col justify-between ${stateBorder} ${
-                    isSelected ? 'ring-2 ring-blue-600 border-blue-600' : ''
+                  className={`absolute text-left rounded-xl ide-card border px-3 py-2 shadow-sm transition hover:shadow-md flex flex-col justify-between ${stateBorder} ${
+                    isSelected ? 'ring-2 ring-[var(--ide-ink)] border-[var(--ide-ink)]' : ''
                   }`}
                 >
                   <div className="flex items-center justify-between gap-1.5">
@@ -343,13 +343,13 @@ export default function AgentDagCanvas({
       </div>
 
       {/* Selected Agent Plain-English Inspector Card */}
-      <div className="ide-surface border ide-border rounded-lg p-4">
+      <div className="ide-canvas border ide-border rounded-2xl p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <Sparkles className="w-4 h-4 ide-ink" />
               <h4 className="text-sm font-semibold ide-ink">{selectedNode.title}</h4>
-              <span className="text-[11px] px-2 py-0.5 rounded ide-subtle ide-ink-secondary font-medium">
+              <span className="text-[11px] px-2.5 py-0.5 rounded-full ide-subtle ide-ink-secondary font-medium">
                 Stage: {selectedNode.stageLabel}
               </span>
             </div>
@@ -359,12 +359,12 @@ export default function AgentDagCanvas({
           {selectedDecision && typeof selectedDecision.confidence === 'number' && (
             <div className="flex items-center gap-2">
               {selectedDecision.needs_approval && (
-                <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 font-medium">
+                <span className="inline-flex items-center gap-1 text-xs px-2.5 py-0.5 rounded-full bg-[#F5E8CE] text-[#7A5213] border border-[#E6D0A3] font-medium">
                   <ShieldAlert className="w-3.5 h-3.5" />
                   Requires Human Review
                 </span>
               )}
-              <span className="text-xs font-mono font-semibold px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 tabular-nums">
+              <span className="kora-pill-healthy text-xs font-mono font-medium px-2.5 py-0.5 rounded-full tabular-nums">
                 {Math.round(selectedDecision.confidence * 100)}% confidence
               </span>
             </div>

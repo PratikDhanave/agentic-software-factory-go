@@ -150,35 +150,35 @@ export default function CodeSyntaxView({ files, workspaceDir, promotedDir }: Pro
 
   if (files.length === 0) {
     return (
-      <div className="ide-surface border ide-border rounded-lg p-12 text-center">
+      <div className="ide-canvas border ide-border rounded-2xl p-12 text-center">
         <FileCode2 className="w-8 h-8 mx-auto ide-ink-muted mb-2.5" />
         <p className="text-sm font-medium ide-ink">No source files materialized yet</p>
         <p className="text-xs ide-ink-muted mt-1 max-w-md mx-auto">
-          Once the build reaches Stage 4 (Code &amp; Test Synthesis), generated Go implementation and unit test files appear here.
+          Once the run reaches Stage 04 (Write Code), generated Go implementation and unit test files appear here.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="ide-surface border ide-border rounded-lg overflow-hidden grid grid-cols-1 md:grid-cols-12 min-h-[460px]">
+    <div className="ide-surface border ide-border rounded-2xl overflow-hidden grid grid-cols-1 md:grid-cols-12 min-h-[460px]">
       {/* Left File Explorer Tree */}
       <aside className="md:col-span-3 border-b md:border-b-0 md:border-r ide-border ide-canvas flex flex-col">
-        <div className="px-3.5 py-2.5 border-b ide-border flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-wider ide-ink-muted">
+        <div className="px-4 py-2.5 border-b ide-border flex items-center justify-between">
+          <span className="text-[11px] font-medium uppercase tracking-[0.06em] ide-ink-muted">
             Explorer ({files.length})
           </span>
         </div>
 
         <div className="p-2.5 space-y-1 flex-1 overflow-y-auto">
           <div className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium ide-ink-secondary">
-            <FolderOpen className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+            <FolderOpen className="w-3.5 h-3.5 ide-ink-muted shrink-0" />
             <span className="truncate font-mono">
               {promotedDir ? promotedDir.split('/').slice(-2).join('/') : 'workspace/'}
             </span>
           </div>
 
-          <div className="pl-3 space-y-0.5">
+          <div className="pl-2 space-y-0.5">
             {files.map((f, idx) => {
               const active = idx === safeIdx;
               const isTest = f.path.endsWith('_test.go');
@@ -188,17 +188,17 @@ export default function CodeSyntaxView({ files, workspaceDir, promotedDir }: Pro
                   key={f.path}
                   type="button"
                   onClick={() => setSelectedIdx(idx)}
-                  className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md text-left text-xs transition ${
+                  className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 rounded-full text-left text-xs transition ${
                     active
-                      ? 'bg-blue-600/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300 font-medium'
-                      : 'ide-ink-secondary hover:bg-black/5 dark:hover:bg-white/5'
+                      ? 'kora-nav-active'
+                      : 'ide-ink-secondary hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'
                   }`}
                 >
                   <span className="flex items-center gap-2 min-w-0">
                     {isTest ? (
-                      <FileText className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <FileText className="w-3.5 h-3.5 text-[#285936] shrink-0" />
                     ) : (
-                      <FileCode2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                      <FileCode2 className="w-3.5 h-3.5 ide-ink shrink-0" />
                     )}
                     <span className="font-mono truncate">{f.path}</span>
                   </span>

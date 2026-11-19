@@ -209,7 +209,7 @@ export default function SelfImprovementDashboard() {
           <div className="px-6 py-4 border-b ide-border">
             <h3 className="text-base font-semibold ide-ink">Learned High-Confidence Patterns</h3>
             <p className="text-xs ide-ink-muted mt-0.5">
-              Patterns >= 85% success rate automatically bypass human gates in Walk mode.
+              Patterns &ge; 85% success rate automatically bypass human gates in Walk mode.
             </p>
           </div>
           <div className="divide-y ide-border">

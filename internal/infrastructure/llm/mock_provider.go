@@ -181,6 +181,12 @@ func synthesizeDeterministicResponse(systemPrompt, prompt string, jsonMode bool)
 	if jsonMode {
 		return `{"status":"ok","valid":true,"score":92,"confidence":0.91}`
 	}
+	if strings.Contains(strings.ToLower(systemPrompt), "engineering recommendations") {
+		return fmt.Sprintf(
+			"### Assessment\nFor **%s**, enforce explicit state transitions via `pkg/state.Machine`, isolate mutable state behind a mutex or channel owner, and verify behavior under `go test -race`.\n\n### Recommended Go Pattern\n1. Define explicit constructor options and return sentinel errors.\n2. Propagate `context.Context` as the first parameter on all blocking or I/O operations.\n3. Pair implementation with table-driven unit tests and a 32-goroutine concurrency stress test.",
+			strings.TrimSpace(prompt),
+		)
+	}
 
 	// 5. Spec-aware multi-file Go code + unit test synthesis!
 	return synthesizeSpecAwareGoFiles(prompt)

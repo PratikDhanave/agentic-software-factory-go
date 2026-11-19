@@ -23,6 +23,7 @@ import (
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/bootstrap"
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain"
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain/entities"
+	"github.com/PratikDhanave/agentic-software-factory-go/internal/domain/services"
 	"github.com/PratikDhanave/agentic-software-factory-go/internal/stateregistry"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/factory"
 	"github.com/PratikDhanave/agentic-software-factory-go/pkg/mcp"
@@ -103,6 +104,8 @@ func (s *webServer) routes() http.Handler {
 	// Autonomous Software Factory Assembly Line (6-Stage End-to-End Pipeline)
 	apiMux.HandleFunc("/api/v1/factory/runs", s.handleFactoryRuns)
 	apiMux.HandleFunc("/api/v1/factory/runs/", s.handleFactoryRunByID)
+	apiMux.HandleFunc("/api/v1/gateway/config", s.handleGatewayConfig)
+	apiMux.HandleFunc("/api/v1/agents/consult", s.handleAgentConsult)
 
 	// Multi-Agent Coordination, DAG Execution & Approvals Gate
 	apiMux.HandleFunc("/api/v1/workflows/generate", s.handleWorkflowGenerate)
@@ -209,6 +212,8 @@ func (s *webServer) handleSystemOverview(w http.ResponseWriter, r *http.Request)
 		"uptime":            time.Since(c.StartedAt).Round(time.Second).String(),
 		"phase":             c.Phase(),
 		"llm_provider":      c.LLMGateway.ProviderName(),
+		"gateway_mode":      c.LLMGateway.PreferredMode(),
+		"gateway_providers": c.LLMGateway.ProviderStatuses(),
 		"persistence":       "sqlite3-wal",
 		"db_path":           c.Store.Path(),
 		"specs_count":       len(specsMap),
@@ -217,6 +222,132 @@ func (s *webServer) handleSystemOverview(w http.ResponseWriter, r *http.Request)
 		"pending_approvals": pendingCount,
 		"factory":           factoryStatus,
 		"database":          dbStats,
+	})
+}
+
+func (s *webServer) handleGatewayConfig(w http.ResponseWriter, r *http.Request) {
+	gw := s.container.LLMGateway
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"preferred_provider": gw.PreferredMode(),
+			"active_provider":    gw.ProviderName(),
+			"providers":          gw.ProviderStatuses(),
+		})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		PreferredProvider string `json:"preferred_provider"`
+		GeminiAPIKey      string `json:"gemini_api_key"`
+		GeminiModel       string `json:"gemini_model"`
+		AnthropicAPIKey   string `json:"anthropic_api_key"`
+		AnthropicModel    string `json:"anthropic_model"`
+		OpenAIAPIKey      string `json:"openai_api_key"`
+		OpenAIModel       string `json:"openai_model"`
+		OllamaURL         string `json:"ollama_url"`
+		OllamaModel       string `json:"ollama_model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	next := gw.ConfigSnapshot()
+	if strings.TrimSpace(req.PreferredProvider) != "" {
+		next.PreferredProvider = strings.ToLower(strings.TrimSpace(req.PreferredProvider))
+	}
+	if strings.TrimSpace(req.GeminiAPIKey) != "" {
+		next.GeminiAPIKey = strings.TrimSpace(req.GeminiAPIKey)
+	}
+	if strings.TrimSpace(req.GeminiModel) != "" {
+		next.GeminiModel = strings.TrimSpace(req.GeminiModel)
+	}
+	if strings.TrimSpace(req.AnthropicAPIKey) != "" {
+		next.AnthropicAPIKey = strings.TrimSpace(req.AnthropicAPIKey)
+	}
+	if strings.TrimSpace(req.AnthropicModel) != "" {
+		next.AnthropicModel = strings.TrimSpace(req.AnthropicModel)
+	}
+	if strings.TrimSpace(req.OpenAIAPIKey) != "" {
+		next.OpenAIAPIKey = strings.TrimSpace(req.OpenAIAPIKey)
+	}
+	if strings.TrimSpace(req.OpenAIModel) != "" {
+		next.OpenAIModel = strings.TrimSpace(req.OpenAIModel)
+	}
+	if strings.TrimSpace(req.OllamaURL) != "" {
+		next.OllamaURL = strings.TrimSpace(req.OllamaURL)
+	}
+	if strings.TrimSpace(req.OllamaModel) != "" {
+		next.OllamaModel = strings.TrimSpace(req.OllamaModel)
+	}
+
+	gw.Reconfigure(next)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"preferred_provider": gw.PreferredMode(),
+		"active_provider":    gw.ProviderName(),
+		"providers":          gw.ProviderStatuses(),
+		"message":            "Model Gateway updated — active provider is now " + gw.ProviderName(),
+	})
+}
+
+func (s *webServer) handleAgentConsult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		Role   string `json:"role"`
+		Prompt string `json:"prompt"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "prompt is required"})
+		return
+	}
+
+	role := strings.ToLower(strings.TrimSpace(req.Role))
+	if role == "" {
+		role = "architect"
+	}
+
+	sysPrompt := fmt.Sprintf("You are the Factory %s Agent inside an Agentic Go Software Factory. Provide concise, actionable engineering guidance.", role)
+	for _, cap := range s.container.AgentRegistry.GetAll() {
+		if strings.EqualFold(string(cap.Role), role) {
+			sysPrompt = fmt.Sprintf(
+				"You are %s (%s). Authority: %s. Capabilities: %s. Respond with crisp, concrete Go engineering recommendations.",
+				cap.Title,
+				cap.Description,
+				cap.DecisionAuthority,
+				strings.Join(cap.Capabilities, ", "),
+			)
+			break
+		}
+	}
+
+	callStart := time.Now()
+	resp, err := s.container.LLMGateway.Complete(r.Context(), &services.LLMRequest{
+		SystemPrompt: sysPrompt,
+		Prompt:       req.Prompt,
+		Temperature:  0.2,
+		MaxTokens:    1200,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"role":        role,
+		"provider":    resp.Provider,
+		"model":       resp.Model,
+		"content":     resp.Content,
+		"tokens":      resp.Tokens,
+		"duration_ms": time.Since(callStart).Milliseconds(),
 	})
 }
 

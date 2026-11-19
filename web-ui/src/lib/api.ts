@@ -37,11 +37,23 @@ export interface FactoryStatusPayload {
   phase?: FactoryPhase;
 }
 
+export interface GatewayProviderStatus {
+  id: string;
+  name: string;
+  model: string;
+  configured: boolean;
+  active: boolean;
+  masked_key?: string;
+  env_var: string;
+}
+
 export interface SystemOverview {
   status: string;
   uptime: string;
   phase: FactoryPhase;
   llm_provider: string;
+  gateway_mode?: string;
+  gateway_providers?: GatewayProviderStatus[];
   persistence: string;
   db_path: string;
   specs_count: number;
@@ -403,6 +415,53 @@ class APIClient {
     return this.request(`/api/v1/factory/runs/${encodeURIComponent(id)}/promote`, {
       method: 'POST',
       body: JSON.stringify({ target_subdir: targetSubdir }),
+    });
+  }
+
+  async getGatewayConfig(): Promise<{
+    preferred_provider: string;
+    active_provider: string;
+    providers: GatewayProviderStatus[];
+  }> {
+    return this.request('/api/v1/gateway/config');
+  }
+
+  async updateGatewayConfig(payload: {
+    preferred_provider?: string;
+    gemini_api_key?: string;
+    gemini_model?: string;
+    anthropic_api_key?: string;
+    anthropic_model?: string;
+    openai_api_key?: string;
+    openai_model?: string;
+    ollama_url?: string;
+    ollama_model?: string;
+  }): Promise<{
+    preferred_provider: string;
+    active_provider: string;
+    providers: GatewayProviderStatus[];
+    message?: string;
+  }> {
+    return this.request('/api/v1/gateway/config', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async consultAgent(
+    role: string,
+    prompt: string
+  ): Promise<{
+    role: string;
+    provider: string;
+    model: string;
+    content: string;
+    tokens: number;
+    duration_ms: number;
+  }> {
+    return this.request('/api/v1/agents/consult', {
+      method: 'POST',
+      body: JSON.stringify({ role, prompt }),
     });
   }
 }

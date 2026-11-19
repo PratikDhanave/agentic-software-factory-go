@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { API_BASE, apiClient, FactoryPhase, FactoryRunRecord, SpecSummary } from '@/lib/api';
-import { useMachine, workbenchActionMachine } from '@/lib/stateMachine';
+import { statusBadge, useMachine, workbenchActionMachine } from '@/lib/stateMachine';
 import CodeSyntaxView, { WorkspaceFileItem } from './CodeSyntaxView';
 import AgentDagCanvas from './AgentDagCanvas';
 import {
@@ -19,7 +19,6 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
-  Sparkles,
   Terminal,
   XCircle,
 } from 'lucide-react';
@@ -60,12 +59,12 @@ export const STARTER_BLUEPRINTS = [
 ];
 
 const PIPELINE_STEPS = [
-  { key: 'spec_synthesis', num: '1', label: 'Spec' },
-  { key: 'agent_governance', num: '2', label: 'Agent Review' },
-  { key: 'workspace_init', num: '3', label: 'Sandbox' },
-  { key: 'code_synthesis', num: '4', label: 'Write Code' },
-  { key: 'verification_loop', num: '5', label: 'Run Tests' },
-  { key: 'judge_evaluation', num: '6', label: 'Quality Score' },
+  { key: 'spec_synthesis', num: '01', label: 'Spec' },
+  { key: 'agent_governance', num: '02', label: 'Agent Review' },
+  { key: 'workspace_init', num: '03', label: 'Sandbox' },
+  { key: 'code_synthesis', num: '04', label: 'Write Code' },
+  { key: 'verification_loop', num: '05', label: 'Race Tests' },
+  { key: 'judge_evaluation', num: '06', label: 'Quality Gate' },
 ];
 
 const STAGE_INDEX: Record<string, number> = {
@@ -87,29 +86,29 @@ interface Props {
   activePhase?: FactoryPhase;
   externalBlueprintTrigger?: { spec_id: string; ts: number } | null;
   onRunStateChange?: () => void;
+  onNotify?: (message: string) => void;
 }
 
 export default function FactoryWorkbench({
   activePhase = 'walk',
   externalBlueprintTrigger,
   onRunStateChange,
+  onNotify,
 }: Props) {
   const [mode, setMode] = useState<'composer' | 'run'>('composer');
   const [subView, setSubView] = useState<SubView>('dag');
+  const [runFilter, setRunFilter] = useState<'all' | 'completed' | 'paused'>('all');
 
-  // Composer state
   const [title, setTitle] = useState(STARTER_BLUEPRINTS[0].title);
   const [description, setDescription] = useState(STARTER_BLUEPRINTS[0].description);
   const [selectedSpecId, setSelectedSpecId] = useState(STARTER_BLUEPRINTS[0].spec_id);
   const [forceApproval, setForceApproval] = useState(false);
 
-  // Data state
   const [specs, setSpecs] = useState<SpecSummary[]>([]);
   const [runs, setRuns] = useState<FactoryRunRecord[]>([]);
   const [activeRun, setActiveRun] = useState<FactoryRunRecord | null>(null);
   const [initialLoaded, setInitialLoaded] = useState(false);
 
-  // Explicit action state machine (eliminates conflicting boolean flags)
   const actionMachine = useMachine(workbenchActionMachine);
   const starting = actionMachine.current === 'starting_build';
   const approving = actionMachine.current === 'approving_gate';
@@ -175,7 +174,7 @@ export default function FactoryWorkbench({
             onRunStateChange?.();
           }
         } catch {
-          // ignore malformed event
+          // ignore
         }
       };
       es.onerror = () => es.close();
@@ -208,6 +207,7 @@ export default function FactoryWorkbench({
         setMode('run');
         setSubView('dag');
         actionMachine.send('succeeded');
+        onNotify?.(`Started build: ${created.title}`);
         subscribeStream(created.id);
         await loadRunsAndSpecs();
         onRunStateChange?.();
@@ -216,7 +216,7 @@ export default function FactoryWorkbench({
         setError(err instanceof Error ? err.message : 'Could not start factory build');
       }
     },
-    [title, description, selectedSpecId, forceApproval, actionMachine, subscribeStream, loadRunsAndSpecs, onRunStateChange]
+    [title, description, selectedSpecId, forceApproval, actionMachine, onNotify, subscribeStream, loadRunsAndSpecs, onRunStateChange]
   );
 
   useEffect(() => {
@@ -240,6 +240,7 @@ export default function FactoryWorkbench({
       setActiveRun(resumed);
       actionMachine.send('succeeded');
       setNotice('Approval recorded — resuming sandbox synthesis and verification...');
+      onNotify?.('Approved checkpoint — resuming sandbox build');
       subscribeStream(resumed.id);
       onRunStateChange?.();
     } catch (err) {
@@ -256,7 +257,8 @@ export default function FactoryWorkbench({
       const promoted = await apiClient.promoteFactoryRun(activeRun.id);
       setActiveRun(promoted);
       actionMachine.send('succeeded');
-      setNotice(`Package promoted to ${promoted.promoted_dir}`);
+      setNotice(`Promoted verified Go package to ${promoted.promoted_dir}`);
+      onNotify?.(`Promoted package to ${promoted.promoted_dir}`);
       await loadRunsAndSpecs();
     } catch (err) {
       actionMachine.send('failed');
@@ -278,11 +280,33 @@ export default function FactoryWorkbench({
   const specObj = activeRun?.payload?.spec;
   const currentStepOrder = activeRun ? STAGE_INDEX[activeRun.stage] ?? 0 : 0;
 
+  const filteredRuns = runs.filter((r) => {
+    if (runFilter === 'completed') return r.status === 'completed';
+    if (runFilter === 'paused') return r.status === 'awaiting_approval';
+    return true;
+  });
+
+  // Extract individual `--- PASS: TestXxx` lines from go test -v output
+  const passedTestNames: string[] = React.useMemo(() => {
+    const raw = String(verification?.raw_test_log || verification?.test_output || '');
+    const matches = raw.match(/---\s+PASS:\s+([A-Za-z0-9_]+)/g) || [];
+    return matches.map((m) => m.replace(/---\s+PASS:\s+/, '').trim());
+  }, [verification]);
+
   return (
-    <div className="h-full grid grid-cols-1 lg:grid-cols-12 min-h-[calc(100vh-3rem)]">
-      {/* Left Explorer Column: New Build Button + Runs List + Quick Blueprints */}
-      <aside className="lg:col-span-3 xl:col-span-3 border-b lg:border-b-0 lg:border-r ide-border ide-canvas flex flex-col">
-        <div className="p-3 border-b ide-border flex items-center justify-between gap-2">
+    <div className="px-6 lg:px-8 py-7 max-w-[1280px] w-full space-y-6">
+      {/* Top Studio Header */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-[28px] leading-tight font-bold tracking-tight ide-ink">
+            Factory Runs
+          </h1>
+          <p className="text-sm ide-ink-muted mt-1">
+            Autonomous 6-stage Go assembly line — Spec synthesis, 10-agent review, isolated `go test -race`, and Judge scoring.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => {
@@ -290,191 +314,134 @@ export default function FactoryWorkbench({
               setError('');
               setNotice('');
             }}
-            className={`flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition shadow-sm ${
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium transition ${
               mode === 'composer'
-                ? 'bg-blue-600 text-white'
-                : 'ide-surface border ide-border ide-ink hover:border-blue-500/50'
+                ? 'bg-[#181816] text-white dark:bg-white dark:text-black'
+                : 'ide-surface border ide-border-strong ide-ink hover:ide-subtle'
             }`}
           >
             <Plus className="w-3.5 h-3.5" />
-            New Factory Build
+            New Run
           </button>
 
           <button
             type="button"
             onClick={loadRunsAndSpecs}
-            className="p-2 rounded-lg ide-surface border ide-border ide-ink-muted hover:ide-ink transition"
-            title="Refresh builds"
+            className="p-2 rounded-full ide-surface border ide-border ide-ink-secondary hover:ide-ink transition"
+            title="Refresh runs"
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
         </div>
+      </div>
 
-        {/* Recent Builds List */}
-        <div className="flex-1 overflow-y-auto p-2.5 space-y-4">
-          <div>
-            <div className="px-2 pb-1.5 flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-wider ide-ink-muted">
-                Builds ({runs.length})
-              </span>
+      {/* Main Split Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        {/* Left Runs Ledger */}
+        <aside className="lg:col-span-3 ide-surface border ide-border rounded-2xl overflow-hidden flex flex-col max-h-[760px]">
+          <div className="px-4 py-3 border-b ide-border space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold ide-ink">Runs ({filteredRuns.length})</span>
+              <span className="text-[10px] font-mono ide-ink-muted">sqlite-wal</span>
             </div>
-
-            {runs.length === 0 ? (
-              <div className="px-3 py-6 rounded-lg border border-dashed ide-border text-center">
-                <p className="text-xs font-medium ide-ink-secondary">No builds yet</p>
-                <p className="text-[11px] ide-ink-muted mt-1">
-                  Pick any blueprint on the right to watch the factory ship verified Go code.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-1">
-                {runs.map((r) => {
-                  const selected = mode === 'run' && activeRun?.id === r.id;
-                  const score = r.payload?.evaluation?.overall_score;
-                  return (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveRun(r);
-                        setMode('run');
-                        setError('');
-                        setNotice('');
-                        const hasCode = (r.payload?.files?.length || 0) > 0;
-                        setSubView(hasCode ? 'code' : 'dag');
-                      }}
-                      className={`w-full text-left px-3 py-2.5 rounded-lg border transition ${
-                        selected
-                          ? 'ide-surface border-blue-600/60 shadow-sm ring-1 ring-blue-600/15'
-                          : 'border-transparent hover:ide-surface hover:ide-border'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          {r.status === 'completed' && (
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                          )}
-                          {r.status === 'awaiting_approval' && (
-                            <PauseCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                          )}
-                          {r.status === 'running' && (
-                            <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />
-                          )}
-                          {r.status === 'failed' && (
-                            <XCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                          )}
-                          <span className="text-xs font-medium ide-ink truncate">{r.title}</span>
-                        </div>
-
-                        {typeof score === 'number' && (
-                          <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 tabular-nums shrink-0">
-                            {Math.round(score)}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="mt-1 pl-5 flex items-center justify-between text-[11px] ide-ink-muted">
-                        <span className="font-mono truncate">{r.spec_id || r.id}</span>
-                        <span className="capitalize">
-                          {r.status === 'awaiting_approval' ? 'Needs Review' : r.status}
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* 1-Click Starter Blueprints in Sidebar */}
-          <div className="pt-2 border-t ide-border">
-            <div className="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider ide-ink-muted">
-              Quick Blueprints
-            </div>
-            <div className="space-y-1">
-              {STARTER_BLUEPRINTS.map((bp) => (
+            <div className="grid grid-cols-3 gap-1 p-0.5 rounded-lg ide-canvas border ide-border text-[11px]">
+              {(
+                [
+                  ['all', 'All'],
+                  ['completed', 'Passed'],
+                  ['paused', 'Paused'],
+                ] as const
+              ).map(([k, lbl]) => (
                 <button
-                  key={bp.spec_id}
+                  key={k}
                   type="button"
-                  onClick={() => {
-                    setSelectedSpecId(bp.spec_id);
-                    setTitle(bp.title);
-                    setDescription(bp.description);
-                    setMode('composer');
-                  }}
-                  className="w-full text-left px-2.5 py-2 rounded-md hover:ide-surface text-xs ide-ink-secondary hover:ide-ink transition flex items-center justify-between gap-2 group"
+                  onClick={() => setRunFilter(k)}
+                  className={`py-1 rounded-md font-medium transition ${
+                    runFilter === k ? 'ide-card ide-ink shadow-sm' : 'ide-ink-muted hover:ide-ink'
+                  }`}
                 >
-                  <span className="truncate">{bp.title}</span>
-                  <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 text-blue-600 shrink-0 transition" />
+                  {lbl}
                 </button>
               ))}
             </div>
           </div>
-        </div>
-      </aside>
 
-      {/* Main Workspace Canvas */}
-      <section className="lg:col-span-9 xl:col-span-9 ide-surface flex flex-col min-w-0">
-        {mode === 'composer' || !activeRun ? (
-          /* ================= GUIDED USER-FRIENDLY BUILD COMPOSER ================= */
-          <div className="max-w-4xl w-full mx-auto px-6 py-8 space-y-7">
-            <div>
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-600/10 text-blue-700 dark:text-blue-300 text-xs font-medium mb-3">
-                <Sparkles className="w-3.5 h-3.5" />
-                Autonomous Go Software Factory
-              </div>
-              <h1 className="text-2xl font-semibold tracking-tight ide-ink">
-                What Go package or service would you like to ship?
-              </h1>
-              <p className="text-sm ide-ink-secondary mt-1.5">
-                Pick a ready-made blueprint below or describe your own requirement. The factory coordinates 10 specialized agents, compiles and race-tests the code in an isolated workspace, and scores quality automatically.
-              </p>
+          {filteredRuns.length === 0 ? (
+            <div className="p-6 text-center text-xs ide-ink-muted">
+              No matching runs. Choose any blueprint on the right to start a verified build.
             </div>
-
-            {/* 3-Step Visual Explainer */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {[
-                {
-                  num: '1',
-                  title: 'Describe or Pick Spec',
-                  desc: 'Start from plain English or a validated YAML specification.',
-                },
-                {
-                  num: '2',
-                  title: '10-Agent Plan & Code',
-                  desc: 'Architect, Security & Developer synthesize Go source + tests.',
-                },
-                {
-                  num: '3',
-                  title: 'Verify & Promote',
-                  desc: 'Runs go build, go vet & go test -race before promoting.',
-                },
-              ].map((s) => (
-                <div key={s.num} className="p-3.5 rounded-lg ide-canvas border ide-border">
-                  <div className="flex items-center gap-2">
-                    <span className="w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold flex items-center justify-center">
-                      {s.num}
-                    </span>
-                    <span className="text-xs font-semibold ide-ink">{s.title}</span>
-                  </div>
-                  <p className="text-xs ide-ink-muted mt-1.5 leading-relaxed">{s.desc}</p>
-                </div>
-              ))}
+          ) : (
+            <div className="divide-y ide-border overflow-y-auto flex-1">
+              {filteredRuns.map((r) => {
+                const selected = mode === 'run' && activeRun?.id === r.id;
+                const score = r.payload?.evaluation?.overall_score;
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveRun(r);
+                      setMode('run');
+                      setError('');
+                      setNotice('');
+                      setSubView((r.payload?.files?.length || 0) > 0 ? 'code' : 'dag');
+                    }}
+                    className={`w-full text-left px-4 py-3.5 transition ${
+                      selected ? 'ide-subtle' : 'hover:bg-black/[0.018] dark:hover:bg-white/[0.02]'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {r.status === 'completed' && (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-[#285936] shrink-0" />
+                        )}
+                        {r.status === 'awaiting_approval' && (
+                          <PauseCircle className="w-3.5 h-3.5 text-[#9C6B19] shrink-0" />
+                        )}
+                        {r.status === 'running' && (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin ide-ink shrink-0" />
+                        )}
+                        {r.status === 'failed' && (
+                          <XCircle className="w-3.5 h-3.5 text-[#7D2626] shrink-0" />
+                        )}
+                        <span className="text-xs font-semibold ide-ink truncate">{r.title}</span>
+                      </div>
+                      {typeof score === 'number' && (
+                        <span className="kora-pill-healthy text-[10px] font-mono px-2 py-0.2 rounded-full shrink-0">
+                          {Math.round(score)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 pl-5 flex items-center justify-between text-[11px] ide-ink-muted">
+                      <span className="font-mono truncate">{r.id}</span>
+                      <span className="capitalize">
+                        {r.status === 'awaiting_approval' ? 'Paused' : r.status}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
+          )}
+        </aside>
 
-            {/* Starter Blueprint Cards */}
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <span className="text-xs font-semibold ide-ink">
-                  Start from a Proven Blueprint
-                </span>
-                <span className="text-xs ide-ink-muted">
-                  Click a card to load, or &ldquo;Build Now&rdquo; to run immediately
-                </span>
+        {/* Right Composer OR Active Run Inspector */}
+        <section className="lg:col-span-9 space-y-5 min-w-0">
+          {mode === 'composer' || !activeRun ? (
+            <div className="ide-surface border ide-border rounded-2xl p-6 space-y-6">
+              <div>
+                <h2 className="text-lg font-semibold ide-ink">
+                  Ship a Verified Go Package
+                </h2>
+                <p className="text-xs ide-ink-muted mt-0.5">
+                  Select a starter blueprint or describe your custom Go requirement below.
+                </p>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+              {/* 4 Editorial Blueprint Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 {STARTER_BLUEPRINTS.map((bp) => {
-                  const isChosen = selectedSpecId === bp.spec_id;
+                  const chosen = selectedSpecId === bp.spec_id;
                   return (
                     <div
                       key={bp.spec_id}
@@ -483,26 +450,26 @@ export default function FactoryWorkbench({
                         setTitle(bp.title);
                         setDescription(bp.description);
                       }}
-                      className={`p-4 rounded-lg border cursor-pointer transition flex flex-col justify-between gap-3 ${
-                        isChosen
-                          ? 'border-blue-600 bg-blue-600/[0.03] ring-1 ring-blue-600/20'
-                          : 'ide-border ide-surface hover:border-slate-400 dark:hover:border-slate-600'
+                      className={`p-4 rounded-2xl border cursor-pointer transition flex flex-col justify-between gap-3 ${
+                        chosen
+                          ? 'ide-card border-[var(--ide-ink)]'
+                          : 'ide-canvas ide-border hover:ide-border-strong'
                       }`}
                     >
                       <div>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded ide-subtle ide-ink-secondary">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="px-2.5 py-0.5 rounded-full ide-subtle ide-ink-secondary font-medium">
                             {bp.tag}
                           </span>
-                          <span className="text-[11px] font-mono ide-ink-muted">{bp.spec_id}</span>
+                          <span className="font-mono ide-ink-muted">{bp.spec_id}</span>
                         </div>
-                        <div className="text-sm font-semibold ide-ink mt-2">{bp.title}</div>
-                        <p className="text-xs ide-ink-secondary mt-1">{bp.short}</p>
+                        <div className="text-sm font-semibold ide-ink mt-2.5">{bp.title}</div>
+                        <p className="text-xs ide-ink-muted mt-1 leading-relaxed">{bp.short}</p>
                       </div>
 
-                      <div className="flex items-center justify-between pt-2 border-t ide-border">
+                      <div className="flex items-center justify-between pt-2.5 border-t ide-border">
                         <span className="text-[11px] ide-ink-muted">
-                          {isChosen ? 'Selected in form below' : 'Click to customize'}
+                          {chosen ? 'Loaded below' : 'Click to customize'}
                         </span>
                         <button
                           type="button"
@@ -518,529 +485,418 @@ export default function FactoryWorkbench({
                               spec_id: bp.spec_id,
                             });
                           }}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                          className="inline-flex items-center gap-1 text-xs font-semibold ide-ink hover:underline"
                         >
-                          Build Now <ArrowRight className="w-3.5 h-3.5" />
+                          Build now <ArrowRight className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
                   );
                 })}
               </div>
-            </div>
 
-            {/* Clean Custom Build Form */}
-            <div className="p-5 rounded-xl ide-canvas border ide-border space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                <div className="md:col-span-7">
-                  <label className="block text-xs font-medium ide-ink mb-1.5">
-                    Package or Feature Name
-                  </label>
-                  <input
-                    value={title}
-                    onChange={(e) => {
-                      setTitle(e.target.value);
-                      setSelectedSpecId('');
-                    }}
-                    placeholder="e.g., Concurrent Token-Bucket Rate Limiter"
-                    className="w-full px-3.5 py-2 rounded-lg ide-surface border ide-border text-sm ide-ink focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
-                  />
+              {/* Custom Requirement Inputs */}
+              <div className="p-5 rounded-2xl ide-canvas border ide-border space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                  <div className="md:col-span-7">
+                    <label className="block text-[11px] uppercase tracking-[0.06em] ide-ink-muted font-medium mb-1.5">
+                      Package / Feature Title
+                    </label>
+                    <input
+                      value={title}
+                      onChange={(e) => {
+                        setTitle(e.target.value);
+                        setSelectedSpecId('');
+                      }}
+                      placeholder="e.g., Concurrent Token-Bucket Rate Limiter"
+                      className="w-full px-3.5 py-2 rounded-xl ide-surface border ide-border text-sm ide-ink focus:outline-none focus:border-[var(--ide-ink)]"
+                    />
+                  </div>
+
+                  <div className="md:col-span-5">
+                    <label className="block text-[11px] uppercase tracking-[0.06em] ide-ink-muted font-medium mb-1.5">
+                      Specification Blueprint
+                    </label>
+                    <select
+                      value={selectedSpecId}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        setSelectedSpecId(id);
+                        const found = specs.find((s) => s.id === id);
+                        if (found) {
+                          setTitle(found.title);
+                          if (found.description) setDescription(found.description);
+                        }
+                      }}
+                      className="w-full px-3.5 py-2 rounded-xl ide-surface border ide-border text-sm ide-ink focus:outline-none"
+                    >
+                      <option value="">Synthesize spec from description</option>
+                      {specs.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.title} ({s.id})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                <div className="md:col-span-5">
-                  <label className="block text-xs font-medium ide-ink mb-1.5">
-                    Specification Source
-                  </label>
-                  <select
-                    value={selectedSpecId}
-                    onChange={(e) => {
-                      const id = e.target.value;
-                      setSelectedSpecId(id);
-                      const found = specs.find((s) => s.id === id);
-                      if (found) {
-                        setTitle(found.title);
-                        if (found.description) setDescription(found.description);
-                      }
-                    }}
-                    className="w-full px-3 py-2 rounded-lg ide-surface border ide-border text-sm ide-ink focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
-                  >
-                    <option value="">Auto-synthesize spec from description</option>
-                    {specs.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.title} ({s.id})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium ide-ink mb-1.5">
-                  Requirements, API Behavior &amp; Test Expectations
-                </label>
-                <textarea
-                  rows={3}
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  onKeyDown={(e) => {
-                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                      e.preventDefault();
-                      startBuild();
-                    }
-                  }}
-                  placeholder="Describe the Go types, methods, concurrency guarantees, and edge cases you want tested..."
-                  className="w-full px-3.5 py-2 rounded-lg ide-surface border ide-border text-sm ide-ink focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
-                />
-              </div>
-
-              {error && (
-                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
-                  {error}
-                </div>
-              )}
-
-              <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
-                <label className="inline-flex items-center gap-2 text-xs ide-ink-secondary cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={forceApproval || activePhase === 'crawl'}
-                    disabled={activePhase === 'crawl'}
-                    onChange={(e) => setForceApproval(e.target.checked)}
-                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-600"
-                  />
-                  <span>
-                    Pause for my approval after Agent Review{' '}
-                    <span className="ide-ink-muted">
-                      ({activePhase === 'crawl' ? 'Always on in Supervised mode' : 'Optional checkpoint'})
-                    </span>
-                  </span>
-                </label>
-
-                <button
-                  type="button"
-                  disabled={starting}
-                  onClick={() => startBuild()}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium shadow-sm transition"
-                >
-                  {starting ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Play className="w-4 h-4 fill-current" />
-                  )}
-                  {starting ? 'Starting Factory Build...' : 'Start Factory Build'}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* ================= ACTIVE BUILD SPLIT-PANE WORKBENCH ================= */
-          <div className="flex-1 flex flex-col min-w-0">
-            {/* Run Top Header + 6-Stage Conveyor */}
-            <div className="px-6 py-4 border-b ide-border space-y-4">
-              <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-lg font-semibold ide-ink">{activeRun.title}</h2>
-                    <span
-                      className={`text-xs font-medium px-2.5 py-0.5 rounded-full border ${
-                        activeRun.status === 'completed'
-                          ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25'
-                          : activeRun.status === 'awaiting_approval'
-                            ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/25'
-                            : activeRun.status === 'failed'
-                              ? 'bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/25'
-                              : 'bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/25'
-                      }`}
-                    >
-                      {activeRun.status === 'awaiting_approval'
-                        ? 'Paused for Approval'
-                        : activeRun.status === 'completed'
-                          ? 'Verified & Complete'
-                          : activeRun.status === 'running'
-                            ? 'Building...'
-                            : activeRun.status}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-3 text-xs ide-ink-muted mt-1 font-mono">
-                    <span>Run: {activeRun.id}</span>
-                    {activeRun.spec_id && <span>• Spec: {activeRun.spec_id}</span>}
-                    <span>• Mode: {activeRun.phase_mode}</span>
-                  </div>
+                  <label className="block text-[11px] uppercase tracking-[0.06em] ide-ink-muted font-medium mb-1.5">
+                    Requirements &amp; Concurrency Invariants
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Describe expected Go types, edge cases, and concurrency guarantees..."
+                    className="w-full px-3.5 py-2 rounded-xl ide-surface border ide-border text-sm ide-ink focus:outline-none focus:border-[var(--ide-ink)]"
+                  />
                 </div>
 
-                {/* Primary Run Actions */}
-                <div className="flex items-center gap-2">
-                  {activeRun.status === 'awaiting_approval' && (
-                    <button
-                      type="button"
-                      disabled={approving}
-                      onClick={handleApproveGate}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold shadow-sm transition"
-                    >
-                      {approving ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <ShieldCheck className="w-4 h-4" />
-                      )}
-                      Approve &amp; Continue Build
-                    </button>
-                  )}
+                {error && (
+                  <div className="p-3 rounded-xl text-xs bg-[#F5DCDC] text-[#7D2626]">{error}</div>
+                )}
 
-                  {activeRun.status === 'completed' && !activeRun.promoted_dir && (
-                    <button
-                      type="button"
-                      disabled={promoting}
-                      onClick={handlePromote}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-sm transition"
-                    >
-                      {promoting ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <FolderOutput className="w-4 h-4" />
-                      )}
-                      Promote to generated/
-                    </button>
-                  )}
+                <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
+                  <label className="inline-flex items-center gap-2 text-xs ide-ink-secondary cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={forceApproval || activePhase === 'crawl'}
+                      disabled={activePhase === 'crawl'}
+                      onChange={(e) => setForceApproval(e.target.checked)}
+                      className="rounded border-stone-400"
+                    />
+                    <span>Pause for human approval after 10-agent review</span>
+                  </label>
 
-                  {activeRun.promoted_dir && (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-xs font-mono text-emerald-700 dark:text-emerald-300">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      {activeRun.promoted_dir.split('/').slice(-2).join('/')}
-                    </span>
-                  )}
+                  <button
+                    type="button"
+                    disabled={starting}
+                    onClick={() => startBuild()}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-[#181816] hover:opacity-90 dark:bg-white dark:text-black disabled:opacity-50 text-white text-xs font-semibold transition"
+                  >
+                    {starting ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                    )}
+                    {starting ? 'Starting Run...' : 'Start Factory Run'}
+                  </button>
                 </div>
               </div>
+            </div>
+          ) : (
+            <div className="ide-surface border ide-border rounded-2xl overflow-hidden">
+              {/* Run Header + 6-Stage Stepper */}
+              <div className="p-6 border-b ide-border space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h2 className="text-lg font-bold ide-ink">{activeRun.title}</h2>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          statusBadge[activeRun.status] || statusBadge.idle
+                        }`}
+                      >
+                        {activeRun.status === 'awaiting_approval'
+                          ? 'Needs Approval'
+                          : activeRun.status}
+                      </span>
+                    </div>
+                    <div className="text-xs font-mono ide-ink-muted mt-1">
+                      {activeRun.id} • {activeRun.spec_id || 'synthesized'} • mode:{activeRun.phase_mode}
+                    </div>
+                  </div>
 
-              {/* Clean 6-Step Progress Bar */}
-              <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
-                {PIPELINE_STEPS.map((st, idx) => {
-                  const stepNum = idx + 1;
-                  const done = activeRun.status === 'completed' || currentStepOrder > stepNum;
-                  const current =
-                    activeRun.status !== 'completed' && currentStepOrder === stepNum;
-                  const pausedHere = current && activeRun.status === 'awaiting_approval';
+                  <div className="flex items-center gap-2">
+                    {activeRun.status === 'awaiting_approval' && (
+                      <button
+                        type="button"
+                        disabled={approving}
+                        onClick={handleApproveGate}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#181816] text-white dark:bg-white dark:text-black text-xs font-semibold transition"
+                      >
+                        {approving ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                        )}
+                        Approve &amp; Continue
+                      </button>
+                    )}
 
-                  return (
-                    <div
-                      key={st.key}
-                      className={`px-3 py-2 rounded-lg border text-xs flex items-center justify-between gap-2 transition ${
-                        pausedHere
-                          ? 'bg-amber-500/10 border-amber-500/40 text-amber-800 dark:text-amber-200'
-                          : current
-                            ? 'bg-blue-600/10 border-blue-600/40 text-blue-800 dark:text-blue-200'
+                    {activeRun.status === 'completed' && !activeRun.promoted_dir && (
+                      <button
+                        type="button"
+                        disabled={promoting}
+                        onClick={handlePromote}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#181816] text-white dark:bg-white dark:text-black text-xs font-semibold transition"
+                      >
+                        {promoting ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <FolderOutput className="w-3.5 h-3.5" />
+                        )}
+                        Promote to generated/
+                      </button>
+                    )}
+
+                    {activeRun.promoted_dir && (
+                      <span className="kora-pill-healthy inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        {activeRun.promoted_dir}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 6-Stage Stepper */}
+                <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+                  {PIPELINE_STEPS.map((st, idx) => {
+                    const stepNum = idx + 1;
+                    const done = activeRun.status === 'completed' || currentStepOrder > stepNum;
+                    const current = activeRun.status !== 'completed' && currentStepOrder === stepNum;
+                    const paused = current && activeRun.status === 'awaiting_approval';
+
+                    return (
+                      <div
+                        key={st.key}
+                        className={`px-3 py-2 rounded-xl border text-xs flex items-center justify-between gap-1.5 ${
+                          paused
+                            ? statusBadge.awaiting_approval
                             : done
-                              ? 'bg-emerald-500/[0.06] border-emerald-500/30 ide-ink'
-                              : 'ide-canvas ide-border ide-ink-muted'
+                              ? 'kora-pill-healthy'
+                              : current
+                                ? statusBadge.running
+                                : 'ide-canvas ide-border ide-ink-muted'
+                        }`}
+                      >
+                        <span className="font-medium truncate">
+                          {st.num} {st.label}
+                        </span>
+                        {done && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+                        {paused && <PauseCircle className="w-3.5 h-3.5 shrink-0" />}
+                        {current && !paused && <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {notice && (
+                  <div className="px-4 py-2.5 rounded-xl kora-pill-healthy text-xs">{notice}</div>
+                )}
+                {(error || activeRun.error) && (
+                  <div className="px-4 py-2.5 rounded-xl bg-[#F5DCDC] text-[#7D2626] text-xs">
+                    {error || activeRun.error}
+                  </div>
+                )}
+              </div>
+
+              {/* Pill Sub-View Navigation */}
+              <div className="px-6 py-3 ide-canvas border-b ide-border flex flex-wrap items-center gap-2">
+                {[
+                  { id: 'code' as SubView, label: `Generated Code (${files.length})`, icon: FileCode2 },
+                  { id: 'dag' as SubView, label: `Agent Graph (${decisions.length || 10})`, icon: GitBranch },
+                  { id: 'terminal' as SubView, label: 'Test & Build Output', icon: Terminal },
+                  {
+                    id: 'quality' as SubView,
+                    label: evaluation
+                      ? `Quality & Spec (${Math.round(evaluation.overall_score)}/100)`
+                      : 'Quality & Spec',
+                    icon: Award,
+                  },
+                ].map((t) => {
+                  const Icon = t.icon;
+                  const active = subView === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setSubView(t.id)}
+                      className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition ${
+                        active
+                          ? 'kora-nav-active'
+                          : 'ide-surface border ide-border ide-ink-secondary hover:ide-ink'
                       }`}
                     >
-                      <span className="font-medium truncate">
-                        {st.num}. {st.label}
-                      </span>
-                      {done && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />}
-                      {pausedHere && <PauseCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
-                      {current && !pausedHere && (
-                        <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />
-                      )}
-                    </div>
+                      <Icon className="w-3.5 h-3.5" />
+                      {t.label}
+                    </button>
                   );
                 })}
               </div>
 
-              {/* Contextual Plain-English Helper Banner */}
-              {activeRun.status === 'awaiting_approval' && (
-                <div className="p-3.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex flex-wrap items-center justify-between gap-3 text-xs">
-                  <div className="text-amber-900 dark:text-amber-200">
-                    <span className="font-semibold">Human checkpoint reached:</span> Review the 10-agent architecture &amp; security decisions below, then click{' '}
-                    <strong>Approve &amp; Continue Build</strong> to synthesize and test the Go package.
-                  </div>
-                </div>
-              )}
+              {/* Sub-View Canvas */}
+              <div className="p-6 space-y-5">
+                {subView === 'code' && (
+                  <CodeSyntaxView
+                    files={files}
+                    workspaceDir={activeRun.workspace_dir}
+                    promotedDir={activeRun.promoted_dir}
+                  />
+                )}
 
-              {notice && (
-                <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-xs text-emerald-800 dark:text-emerald-200">
-                  {notice}
-                </div>
-              )}
+                {subView === 'dag' && (
+                  <AgentDagCanvas
+                    stage={activeRun.stage}
+                    status={activeRun.status}
+                    decisions={decisions}
+                    judgeScore={evaluation?.overall_score}
+                    specId={activeRun.spec_id}
+                  />
+                )}
 
-              {(error || activeRun.error) && (
-                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
-                  {error || activeRun.error}
-                </div>
-              )}
-            </div>
-
-            {/* Sub-View Workspace Tabs */}
-            <div className="px-6 ide-subtle border-b ide-border flex items-center gap-1 overflow-x-auto">
-              {[
-                {
-                  id: 'code' as SubView,
-                  label: `Generated Code (${files.length})`,
-                  icon: FileCode2,
-                },
-                {
-                  id: 'dag' as SubView,
-                  label: `Agent Graph (${decisions.length || 10})`,
-                  icon: GitBranch,
-                },
-                {
-                  id: 'terminal' as SubView,
-                  label: 'Test & Build Output',
-                  icon: Terminal,
-                },
-                {
-                  id: 'quality' as SubView,
-                  label: evaluation
-                    ? `Quality & Spec (${Math.round(evaluation.overall_score)}/100)`
-                    : 'Quality & Spec',
-                  icon: Award,
-                },
-              ].map((t) => {
-                const Icon = t.icon;
-                const active = subView === t.id;
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => setSubView(t.id)}
-                    className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 whitespace-nowrap transition ${
-                      active
-                        ? 'border-blue-600 text-blue-700 dark:text-blue-400 bg-white/60 dark:bg-white/[0.03]'
-                        : 'border-transparent ide-ink-secondary hover:ide-ink'
-                    }`}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                    {t.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Sub-View Body */}
-            <div className="flex-1 p-6 overflow-y-auto space-y-6">
-              {subView === 'code' && (
-                <CodeSyntaxView
-                  files={files}
-                  workspaceDir={activeRun.workspace_dir}
-                  promotedDir={activeRun.promoted_dir}
-                />
-              )}
-
-              {subView === 'dag' && (
-                <AgentDagCanvas
-                  stage={activeRun.stage}
-                  status={activeRun.status}
-                  decisions={decisions}
-                  judgeScore={evaluation?.overall_score}
-                  specId={activeRun.spec_id}
-                />
-              )}
-
-              {subView === 'terminal' && (
-                <div className="space-y-5">
-                  {/* Verification Gate Summary Cards */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <GateCard
-                      label="Go Compiler (go build)"
-                      passed={verification?.build_passed}
-                      detail={
-                        verification?.build_passed
-                          ? 'Compiled cleanly with zero errors'
-                          : verification
-                            ? 'Build diagnostics reported'
-                            : 'Waiting for Stage 5...'
-                      }
-                    />
-                    <GateCard
-                      label="Unit & Race Tests (go test -race)"
-                      passed={verification?.tests_passed}
-                      detail={
-                        verification?.tests_passed
-                          ? 'All test cases & race detector passed'
-                          : verification
-                            ? 'Test failures reported'
-                            : 'Waiting for Stage 5...'
-                      }
-                    />
-                    <GateCard
-                      label="Static Analysis (go vet)"
-                      passed={verification?.lint_passed}
-                      detail={
-                        verification?.lint_passed
-                          ? 'Zero static analysis warnings'
-                          : verification
-                            ? 'Vet warnings found'
-                            : 'Waiting for Stage 5...'
-                      }
-                    />
-                  </div>
-
-                  {/* Terminal Output */}
-                  <div className="rounded-lg border ide-border overflow-hidden">
-                    <div className="px-4 py-2 ide-subtle border-b ide-border flex items-center justify-between text-xs">
-                      <span className="font-semibold ide-ink">
-                        Sandbox Test Runner Output
-                      </span>
-                      <span className="font-mono text-[11px] ide-ink-muted">
-                        {activeRun.workspace_dir
-                          ? activeRun.workspace_dir.split('/').slice(-3).join('/')
-                          : 'isolated-workspace'}
-                      </span>
+                {subView === 'terminal' && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <GateCard label="go build" passed={verification?.build_passed} />
+                      <GateCard label="go test -race" passed={verification?.tests_passed} />
+                      <GateCard label="go vet" passed={verification?.lint_passed} />
                     </div>
-                    <pre className="p-4 bg-slate-950 text-emerald-300 text-xs font-mono overflow-x-auto max-h-80 leading-relaxed">
-                      {verification?.raw_test_log ||
-                        'Waiting for sandbox compiler and go test -v -race execution...'}
-                    </pre>
-                  </div>
 
-                  {/* Execution Timeline */}
-                  <div className="rounded-lg border ide-border ide-surface overflow-hidden">
-                    <div className="px-4 py-2.5 ide-subtle border-b ide-border text-xs font-semibold ide-ink">
-                      Stage Execution Timeline
-                    </div>
-                    <div className="divide-y ide-border">
-                      {timeline.map((ev, idx) => (
-                        <div
-                          key={idx}
-                          className="px-4 py-2.5 flex items-center justify-between gap-4 text-xs"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <Clock className="w-3.5 h-3.5 ide-ink-muted shrink-0" />
-                            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded ide-subtle ide-ink-secondary">
-                              {ev.stage}
-                            </span>
-                            <span className="ide-ink truncate">{ev.message}</span>
-                          </div>
-                          {typeof ev.duration_ms === 'number' && ev.duration_ms > 0 && (
-                            <span className="font-mono text-[11px] ide-ink-muted tabular-nums shrink-0">
-                              {ev.duration_ms}ms
-                            </span>
-                          )}
+                    {passedTestNames.length > 0 && (
+                      <div className="p-4 rounded-2xl ide-canvas border ide-border space-y-2">
+                        <div className="text-[11px] uppercase tracking-[0.06em] ide-ink-muted font-medium">
+                          Verified Test Cases ({passedTestNames.length})
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {subView === 'quality' && (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                  {/* Left: 5-Criterion Judge Scorecard */}
-                  <div className="lg:col-span-6 p-5 rounded-lg border ide-border ide-surface space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-sm font-semibold ide-ink">
-                          Engineering Quality Rubric
-                        </h3>
-                        <p className="text-xs ide-ink-muted mt-0.5">
-                          Automated 5-dimension evaluation (pass threshold: 75/100)
-                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {passedTestNames.map((fn) => (
+                            <span
+                              key={fn}
+                              className="kora-pill-healthy inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-mono"
+                            >
+                              <CheckCircle2 className="w-3 h-3" />
+                              {fn}
+                            </span>
+                          ))}
+                        </div>
                       </div>
-                      {evaluation && (
-                        <div className="text-right">
-                          <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-                            {Math.round(evaluation.overall_score)}
-                            <span className="text-xs font-normal ide-ink-muted">/100</span>
+                    )}
+
+                    <pre className="p-4 rounded-2xl bg-[#181816] text-[#DCE9DF] text-xs font-mono overflow-x-auto max-h-80 leading-relaxed">
+                      {verification?.raw_test_log ||
+                        verification?.test_output ||
+                        'Waiting for Stage 5 isolated workspace verification...'}
+                    </pre>
+
+                    <div className="rounded-2xl border ide-border overflow-hidden">
+                      <div className="px-4 py-2.5 ide-canvas border-b ide-border text-xs font-semibold ide-ink">
+                        Stage Timeline
+                      </div>
+                      <div className="divide-y ide-border">
+                        {timeline.map((ev, i) => (
+                          <div key={i} className="px-4 py-2.5 flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Clock className="w-3.5 h-3.5 ide-ink-muted shrink-0" />
+                              <span className="font-mono text-[11px] ide-ink-muted">{ev.stage}</span>
+                              <span className="ide-ink truncate">{ev.message}</span>
+                            </div>
+                            {typeof ev.duration_ms === 'number' && ev.duration_ms > 0 && (
+                              <span className="font-mono text-[11px] ide-ink-muted shrink-0">
+                                {ev.duration_ms}ms
+                              </span>
+                            )}
                           </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {subView === 'quality' && (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    <div className="p-5 rounded-2xl ide-canvas border ide-border space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold ide-ink">Judge Quality Rubric</h3>
+                          <p className="text-xs ide-ink-muted">Pass threshold: 75 / 100</p>
                         </div>
+                        {evaluation && (
+                          <span className="text-2xl font-bold ide-ink tabular-nums">
+                            {Math.round(evaluation.overall_score)}/100
+                          </span>
+                        )}
+                      </div>
+                      {evaluation?.scores ? (
+                        <div className="space-y-3">
+                          {Object.entries(evaluation.scores).map(([k, val]) => {
+                            const num = Math.round(Number(val) || 0);
+                            return (
+                              <div key={k}>
+                                <div className="flex justify-between text-xs mb-1">
+                                  <span className="capitalize ide-ink-secondary">
+                                    {k.replace(/_/g, ' ')}
+                                  </span>
+                                  <span className="font-mono font-semibold ide-ink">{num}%</span>
+                                </div>
+                                <div className="h-2 rounded-full ide-subtle overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full bg-[#285936]"
+                                    style={{ width: `${Math.min(100, num)}%` }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-xs ide-ink-muted py-6">Awaiting Stage 6 evaluation...</p>
                       )}
                     </div>
 
-                    {evaluation?.scores ? (
-                      <div className="space-y-3 pt-2">
-                        {Object.entries(evaluation.scores).map(([criterion, val]) => {
-                          const num = Math.round(Number(val) || 0);
-                          return (
-                            <div key={criterion}>
-                              <div className="flex items-center justify-between text-xs mb-1">
-                                <span className="capitalize font-medium ide-ink-secondary">
-                                  {criterion.replace(/_/g, ' ')}
-                                </span>
-                                <span className="font-mono font-semibold ide-ink tabular-nums">
-                                  {num}%
-                                </span>
-                              </div>
-                              <div className="h-2 rounded-full ide-subtle overflow-hidden">
-                                <div
-                                  className="h-full rounded-full bg-blue-600 transition-all"
-                                  style={{ width: `${Math.min(100, num)}%` }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        })}
-                        {evaluation.summary && (
-                          <p className="text-xs ide-ink-secondary pt-3 border-t ide-border leading-relaxed">
-                            {evaluation.summary}
-                          </p>
-                        )}
-                      </div>
-                    ) : (
-                      <p className="text-xs ide-ink-muted py-8 text-center">
-                        Quality scores appear once Stage 6 completes.
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Right: Specification Summary */}
-                  <div className="lg:col-span-6 p-5 rounded-lg border ide-border ide-surface space-y-4">
-                    <div>
+                    <div className="p-5 rounded-2xl ide-canvas border ide-border space-y-3">
                       <h3 className="text-sm font-semibold ide-ink">
-                        Active Specification ({activeRun.spec_id || 'Synthesized'})
+                        Specification ({activeRun.spec_id || 'Synthesized'})
                       </h3>
-                      <p className="text-xs ide-ink-secondary mt-1">
+                      <p className="text-xs ide-ink-secondary leading-relaxed">
                         {specObj?.Intent?.Goal || specObj?.intent?.goal || activeRun.description}
                       </p>
-                    </div>
-
-                    {(specObj?.Constraints || specObj?.constraints) && (
-                      <div>
-                        <div className="text-[11px] font-semibold uppercase tracking-wider ide-ink-muted mb-2">
-                          Enforced Constraints
-                        </div>
-                        <div className="space-y-1.5">
+                      {(specObj?.Constraints || specObj?.constraints) && (
+                        <div className="space-y-1.5 pt-2">
                           {(specObj.Constraints || specObj.constraints || []).map((c: any) => (
                             <div
                               key={c.ID || c.id}
-                              className="px-3 py-2 rounded-md ide-canvas border ide-border text-xs flex items-center gap-2"
+                              className="px-3 py-2 rounded-xl ide-surface border ide-border text-xs flex items-center gap-2"
                             >
-                              <span className="font-mono text-[10px] uppercase px-1.5 py-0.5 rounded bg-blue-600/10 text-blue-700 dark:text-blue-300 font-semibold">
+                              <span className="font-mono text-[10px] uppercase px-2 py-0.5 rounded-full ide-subtle ide-ink-secondary">
                                 {c.Type || c.type}
                               </span>
                               <span className="ide-ink">{c.Description || c.description}</span>
                             </div>
                           ))}
                         </div>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
 
-function GateCard({
-  label,
-  passed,
-  detail,
-}: {
-  label: string;
-  passed?: boolean;
-  detail: string;
-}) {
+function GateCard({ label, passed }: { label: string; passed?: boolean }) {
   return (
-    <div className="p-4 rounded-lg border ide-border ide-surface">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold ide-ink">{label}</span>
-        {passed === true && <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />}
-        {passed === false && <XCircle className="w-4 h-4 text-rose-600 shrink-0" />}
-        {passed === undefined && <Clock className="w-4 h-4 ide-ink-muted shrink-0" />}
-      </div>
-      <p className="text-xs ide-ink-secondary mt-1.5">{detail}</p>
+    <div className="p-4 rounded-2xl ide-canvas border ide-border flex items-center justify-between">
+      <span className="text-xs font-mono font-semibold ide-ink">{label}</span>
+      {passed === true && (
+        <span className="kora-pill-healthy px-2.5 py-0.5 rounded-full text-xs font-medium">
+          Passed
+        </span>
+      )}
+      {passed === false && (
+        <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${statusBadge.failed}`}>
+          Failed
+        </span>
+      )}
+      {passed === undefined && (
+        <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${statusBadge.idle}`}>
+          Pending
+        </span>
+      )}
     </div>
   );
 }

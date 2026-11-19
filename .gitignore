@@ -2,20 +2,29 @@
 
 # Compiled Go binaries
 /asf
+/asf-cli
+/asf-web
 /asf-web-bin
+/bin/
+
+# Local environment secrets
+.env
+.env.*
+web-ui/.env.local
 
 # Factory runtime state (SQLite)
 /.asf/
 
-# Playwright MCP artifacts
+# Playwright & test artifacts
 /.playwright-mcp/
+web-ui/playwright-report/
+web-ui/test-results/
 
 # Node / Next.js
 node_modules/
 .next/
 out/
 *.tsbuildinfo
-/asf-web
 
 
 #Ignore vscode AI rules

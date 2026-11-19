@@ -3,40 +3,42 @@
 @tailwind utilities;
 
 :root {
-  --ide-canvas: #f5f4ef;
-  --ide-surface: #fbfaf7;
+  --ide-sidebar: #f8f7f3;
+  --ide-canvas: #f1f0ea;
+  --ide-surface: #faf9f5;
   --ide-card: #ffffff;
-  --ide-subtle: #eceae2;
-  --ide-hover: #e6e4db;
-  --ide-nav-active: #e2e6ec;
-  --ide-nav-border: #3a4552;
-  --ide-border: #e4e2da;
-  --ide-border-strong: #cfcbc0;
-  --ide-ink: #181816;
-  --ide-ink-secondary: #575650;
-  --ide-ink-muted: #78766e;
-  --ide-accent: #181816;
-  --ide-code-bg: #f9f8f4;
-  --ide-gutter-bg: #f0eee7;
+  --ide-subtle: #e7e5dc;
+  --ide-hover: #e3e1d7;
+  --ide-nav-active: #e2e7ed;
+  --ide-nav-border: #2e3a46;
+  --ide-border: #dfddd3;
+  --ide-border-strong: #c6c3b6;
+  --ide-ink: #171715;
+  --ide-ink-secondary: #52514b;
+  --ide-ink-muted: #76746c;
+  --ide-accent: #171715;
+  --ide-code-bg: #fcfbf8;
+  --ide-gutter-bg: #f1efe8;
   color-scheme: light;
 }
 
 html.dark {
-  --ide-canvas: #121210;
-  --ide-surface: #191916;
-  --ide-card: #1d1d1a;
-  --ide-subtle: #23231f;
-  --ide-hover: #2a2a25;
-  --ide-nav-active: #252930;
-  --ide-nav-border: #64748b;
-  --ide-border: #2b2a26;
-  --ide-border-strong: #3d3c36;
-  --ide-ink: #f3f2ed;
-  --ide-ink-secondary: #a8a69d;
-  --ide-ink-muted: #78766e;
-  --ide-accent: #f3f2ed;
-  --ide-code-bg: #161614;
-  --ide-gutter-bg: #1c1c19;
+  --ide-sidebar: #141412;
+  --ide-canvas: #0f0f0d;
+  --ide-surface: #181815;
+  --ide-card: #1e1e1a;
+  --ide-subtle: #252520;
+  --ide-hover: #2c2c26;
+  --ide-nav-active: #252a32;
+  --ide-nav-border: #708094;
+  --ide-border: #2b2a25;
+  --ide-border-strong: #3e3d36;
+  --ide-ink: #f4f3ee;
+  --ide-ink-secondary: #aba99f;
+  --ide-ink-muted: #7d7b72;
+  --ide-accent: #f4f3ee;
+  --ide-code-bg: #151513;
+  --ide-gutter-bg: #1b1b18;
   color-scheme: dark;
 }
 
@@ -80,6 +82,9 @@ html.dark {
 }
 
 @layer utilities {
+  .ide-sidebar {
+    background-color: var(--ide-sidebar);
+  }
   .ide-canvas {
     background-color: var(--ide-canvas);
   }
@@ -109,19 +114,20 @@ html.dark {
   }
   .kora-nav-active {
     background-color: var(--ide-nav-active);
-    border: 1px solid var(--ide-nav-border);
+    border: 1.5px solid var(--ide-nav-border);
+    border-radius: 12px;
     color: var(--ide-ink);
     font-weight: 500;
   }
   .kora-pill-healthy {
     background-color: #dce9df;
-    color: #285936;
-    border: 1px solid #c3dac8;
+    color: #265734;
+    border: 1px solid #bfd7c5;
   }
   html.dark .kora-pill-healthy {
-    background-color: rgba(46, 125, 69, 0.2);
+    background-color: rgba(46, 125, 69, 0.22);
     color: #86efac;
-    border: 1px solid rgba(74, 222, 128, 0.3);
+    border: 1px solid rgba(74, 222, 128, 0.32);
   }
   .bg-dag-dot-grid {
     background-color: var(--ide-code-bg);
