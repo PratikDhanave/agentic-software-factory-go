@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -210,7 +211,10 @@ func (c *Client) CallCapability(ctx context.Context, serviceName string, capabil
 	}
 
 	body, _ := json.Marshal(req)
-	resp, err := http.Post(url, "application/json", nil)
+
+	var buf bytes.Buffer
+	buf.Write(body)
+	resp, err := http.Post(url, "application/json", &buf)
 	if err != nil {
 		return nil, fmt.Errorf("call capability: %w", err)
 	}
