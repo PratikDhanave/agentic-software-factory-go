@@ -10,6 +10,8 @@ import Services from './pages/Services';
 import Credentials from './pages/Credentials';
 import Policies from './pages/Policies';
 import Logs from './pages/Logs';
+import Projects from './pages/Projects';
+import Issues from './pages/Issues';
 
 export default function App() {
   const loadStats = useStore((state) => state.loadStats);
@@ -32,6 +34,8 @@ export default function App() {
           <Route path="/agents/:id/credentials" element={<Credentials />} />
           <Route path="/tenants/:id/policies" element={<Policies />} />
           <Route path="/logs" element={<Logs />} />
+          <Route path="/projects" element={<Projects />} />
+          <Route path="/issues" element={<Issues />} />
         </Routes>
       </Layout>
     </Router>

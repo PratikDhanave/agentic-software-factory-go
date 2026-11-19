@@ -10,6 +10,8 @@ import {
   FileText,
   AlertCircle,
   Menu,
+  Trello,
+  BookOpen,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -104,6 +106,16 @@ export default function Layout({ children }: LayoutProps) {
             to="/logs"
             icon={<AlertCircle size={20} />}
             label="Logs"
+          />
+          <NavLink
+            to="/projects"
+            icon={<Trello size={20} />}
+            label="Projects"
+          />
+          <NavLink
+            to="/issues"
+            icon={<BookOpen size={20} />}
+            label="Issues"
           />
         </nav>
 
