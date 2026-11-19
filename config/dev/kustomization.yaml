@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: factory-dev
+
+bases:
+  - ../base
+
+commonLabels:
+  environment: development
+
+namePrefix: dev-
+
+configMapGenerator:
+  - name: factory-config
+    behavior: merge
+    literals:
+      - environment=dev
+      - log_level=debug

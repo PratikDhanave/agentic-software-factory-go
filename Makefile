@@ -61,3 +61,59 @@ docker-logs:
 ## Run factory binary inside Docker container
 docker-shell:
 	docker-compose exec factory sh
+
+## Kubernetes targets
+
+## Install kind if not present
+kind-install:
+	@if ! command -v kind &> /dev/null; then \
+		go install sigs.k8s.io/kind@latest; \
+		echo "✅ kind installed"; \
+	else \
+		echo "✅ kind already installed"; \
+	fi
+
+## Create local kind cluster named factory-test
+kind-up: kind-install
+	@if ! kind get clusters | grep -q factory-test; then \
+		kind create cluster --name factory-test --image kindest/node:v1.27.0; \
+		echo "✅ kind cluster created"; \
+	else \
+		echo "ℹ️  kind cluster 'factory-test' already exists"; \
+	fi
+
+## Delete kind cluster
+kind-down:
+	kind delete cluster --name factory-test
+
+## Validate Helm chart
+helm-lint:
+	helm lint helm/agentic-factory/
+
+## Validate Kustomization
+kustomize-validate:
+	@command -v kustomize &> /dev/null || \
+		(echo "Installing kustomize..." && go install sigs.k8s.io/kustomize/kustomize/v5@latest)
+	kustomize build config/base > /tmp/base.yaml
+	kustomize build config/dev > /tmp/dev.yaml
+	kustomize build config/prod > /tmp/prod.yaml
+	@echo "✅ Kustomization is valid"
+
+## Deploy to kind cluster using Helm
+helm-deploy-kind: helm-lint kind-up
+	helm upgrade --install factory helm/agentic-factory/ \
+		--namespace factory-system \
+		--create-namespace \
+		--values helm/agentic-factory/values.yaml
+	@echo "✅ Deployed to kind cluster"
+
+## Show k8s deployment status
+k8s-status:
+	@echo "=== Namespaces ===" && \
+	kubectl get namespaces && \
+	echo "" && \
+	echo "=== Deployments ===" && \
+	kubectl get deployments -A && \
+	echo "" && \
+	echo "=== Pods ===" && \
+	kubectl get pods -A

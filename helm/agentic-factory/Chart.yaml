@@ -1,0 +1,23 @@
+apiVersion: v2
+name: agentic-factory
+description: Agentic Software Factory Control Plane with Governance
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+maintainers:
+  - name: Pratik Dhanave
+    email: i.pratikdhanave@gmail.com
+
+keywords:
+  - agents
+  - factory
+  - governance
+  - control-plane
+
+home: https://github.com/PratikDhanave/agentic-software-factory-go
+sources:
+  - https://github.com/PratikDhanave/agentic-software-factory-go
+
+annotations:
+  category: Integration
