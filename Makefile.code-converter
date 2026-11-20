@@ -1,0 +1,169 @@
+.PHONY: help start stop restart clean test build logs ollama backend frontend dev prod kill-port
+
+# Colors for output
+BLUE := \033[0;34m
+GREEN := \033[0;32m
+RED := \033[0;31m
+NC := \033[0m # No Color
+
+BACKEND_PORT := 8080
+FRONTEND_PORT := 3000
+OLLAMA_PORT := 11434
+
+help:
+	@echo "$(BLUE)Code Converter System - Makefile$(NC)"
+	@echo ""
+	@echo "Available commands:"
+	@echo "  $(GREEN)make start$(NC)         Start all services (backend, frontend, ollama)"
+	@echo "  $(GREEN)make stop$(NC)          Stop all services"
+	@echo "  $(GREEN)make restart$(NC)       Restart all services"
+	@echo "  $(GREEN)make dev$(NC)           Start in development mode (watch for changes)"
+	@echo "  $(GREEN)make prod$(NC)          Build and run production version"
+	@echo ""
+	@echo "Individual services:"
+	@echo "  $(GREEN)make backend$(NC)       Start Go backend only"
+	@echo "  $(GREEN)make frontend$(NC)      Start React frontend only"
+	@echo "  $(GREEN)make ollama$(NC)        Start Ollama service"
+	@echo ""
+	@echo "Utilities:"
+	@echo "  $(GREEN)make test$(NC)          Test Code Converter API"
+	@echo "  $(GREEN)make build$(NC)         Build backend binary"
+	@echo "  $(GREEN)make logs$(NC)          Tail backend logs"
+	@echo "  $(GREEN)make clean$(NC)         Stop services and clean up"
+	@echo "  $(GREEN)make kill-port$(NC)     Kill process on port 8080"
+	@echo ""
+
+# Start all services
+start: ollama backend frontend
+	@echo "$(GREEN)✓ All services started$(NC)"
+
+# Stop all services
+stop:
+	@echo "$(RED)Stopping services...$(NC)"
+	@pkill -f "go run cmd/asf-web/main.go" || true
+	@pkill -f "npm run dev" || true
+	@pkill -f "vite" || true
+	@echo "$(GREEN)✓ Services stopped$(NC)"
+
+# Restart all services
+restart: stop start
+	@echo "$(GREEN)✓ Services restarted$(NC)"
+
+# Start Ollama service
+ollama:
+	@echo "$(BLUE)Starting Ollama...$(NC)"
+	@if ! pgrep -f "ollama serve" > /dev/null; then \
+		ollama serve > /tmp/ollama.log 2>&1 & \
+		sleep 3; \
+		echo "$(GREEN)✓ Ollama running on http://localhost:$(OLLAMA_PORT)$(NC)"; \
+	else \
+		echo "$(GREEN)✓ Ollama already running$(NC)"; \
+	fi
+
+# Start backend
+backend:
+	@echo "$(BLUE)Starting backend...$(NC)"
+	@pkill -f "go run cmd/asf-web/main.go" 2>/dev/null || true
+	@sleep 1
+	@go run cmd/asf-web/main.go localhost:$(BACKEND_PORT) > /tmp/backend.log 2>&1 &
+	@sleep 3
+	@echo "$(GREEN)✓ Backend running on http://localhost:$(BACKEND_PORT)$(NC)"
+	@echo "   API: http://localhost:$(BACKEND_PORT)/api/conversions"
+
+# Start frontend
+frontend:
+	@echo "$(BLUE)Starting frontend...$(NC)"
+	@cd web && npm run dev > /tmp/frontend.log 2>&1 &
+	@sleep 5
+	@echo "$(GREEN)✓ Frontend running on http://localhost:$(FRONTEND_PORT)$(NC)"
+
+# Development mode with watch
+dev: stop
+	@echo "$(BLUE)Starting development mode...$(NC)"
+	@$(MAKE) ollama
+	@$(MAKE) backend
+	@echo "$(GREEN)✓ Development mode ready$(NC)"
+	@echo "   Backend: http://localhost:$(BACKEND_PORT)"
+	@echo "   Frontend (optional): cd web && npm run dev"
+
+# Production build and run
+prod: clean
+	@echo "$(BLUE)Building production version...$(NC)"
+	@go build -o bin/asf-web cmd/asf-web/main.go
+	@echo "$(GREEN)✓ Build complete$(NC)"
+	@echo "$(BLUE)Starting production...$(NC)"
+	@./bin/asf-web localhost:$(BACKEND_PORT) > /tmp/backend.log 2>&1 &
+	@sleep 3
+	@echo "$(GREEN)✓ Production running$(NC)"
+
+# Test API
+test:
+	@echo "$(BLUE)Testing Code Converter API...$(NC)"
+	@echo ""
+	@echo "Swift → Flutter test:"
+	@curl -s -X POST http://localhost:$(BACKEND_PORT)/api/conversions \
+		-H "Content-Type: application/json" \
+		-d '{"sourceLanguage":"swift","sourceCode":"import UIKit\nclass ViewController: UIViewController {}"}' \
+		| jq '{status: .status, assignedAgent: .assignedAgent, hasFlutterCode: (.flutterCode != null)}'
+	@echo ""
+	@echo "Kotlin → Flutter test:"
+	@curl -s -X POST http://localhost:$(BACKEND_PORT)/api/conversions \
+		-H "Content-Type: application/json" \
+		-d '{"sourceLanguage":"kotlin","sourceCode":"class MainActivity : AppCompatActivity() {}"}' \
+		| jq '{status: .status, assignedAgent: .assignedAgent, hasFlutterCode: (.flutterCode != null)}'
+
+# Build backend binary
+build:
+	@echo "$(BLUE)Building backend binary...$(NC)"
+	@mkdir -p bin
+	@go build -o bin/asf-web cmd/asf-web/main.go
+	@echo "$(GREEN)✓ Binary built: bin/asf-web$(NC)"
+
+# View logs
+logs:
+	@echo "$(BLUE)Backend logs (Ctrl+C to exit):$(NC)"
+	@tail -f /tmp/backend.log
+
+# Kill process on port 8080
+kill-port:
+	@echo "$(RED)Killing process on port $(BACKEND_PORT)...$(NC)"
+	@lsof -i :$(BACKEND_PORT) 2>/dev/null | grep -v "^COMMAND" | awk '{print $$2}' | sort -u | xargs kill -9 2>/dev/null || true
+	@sleep 1
+	@echo "$(GREEN)✓ Port $(BACKEND_PORT) freed$(NC)"
+
+# Clean up
+clean: stop
+	@echo "$(RED)Cleaning up...$(NC)"
+	@rm -f bin/asf-web
+	@pkill -f "ollama serve" 2>/dev/null || true
+	@rm -f /tmp/backend.log /tmp/frontend.log /tmp/ollama.log
+	@echo "$(GREEN)✓ Cleanup complete$(NC)"
+
+# Install dependencies
+install:
+	@echo "$(BLUE)Installing dependencies...$(NC)"
+	@cd web && npm install
+	@go mod download
+	@echo "$(GREEN)✓ Dependencies installed$(NC)"
+
+# Health check
+health:
+	@echo "$(BLUE)Checking system health...$(NC)"
+	@echo ""
+	@echo -n "Backend: "
+	@curl -s http://localhost:$(BACKEND_PORT)/health | jq '.status' || echo "$(RED)offline$(NC)"
+	@echo -n "Ollama: "
+	@curl -s http://localhost:$(OLLAMA_PORT)/api/tags | jq '.models | length' | xargs echo "$(GREEN)online -$(NC) models" || echo "$(RED)offline$(NC)"
+	@echo -n "Frontend: "
+	@curl -s http://localhost:$(FRONTEND_PORT)/ > /dev/null && echo "$(GREEN)online$(NC)" || echo "$(RED)offline$(NC)"
+
+# Docker commands (optional)
+docker-build:
+	@echo "$(BLUE)Building Docker image...$(NC)"
+	@docker build -t code-converter:latest .
+	@echo "$(GREEN)✓ Docker image built$(NC)"
+
+docker-run:
+	@echo "$(BLUE)Running Docker container...$(NC)"
+	@docker run -p $(BACKEND_PORT):$(BACKEND_PORT) -v ~/.ollama:/root/.ollama code-converter:latest
+	@echo "$(GREEN)✓ Container running$(NC)"

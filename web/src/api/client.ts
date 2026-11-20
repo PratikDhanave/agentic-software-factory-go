@@ -51,6 +51,18 @@ export interface PolicyRule {
   effect: 'allow' | 'deny';
 }
 
+export interface ConversionTask {
+  id: string;
+  sourceLanguage: 'swift' | 'kotlin';
+  sourceCode: string;
+  flutterCode?: string;
+  status: 'pending' | 'converting' | 'completed' | 'failed';
+  assignedAgent?: string;
+  createdAt: string;
+  completedAt?: string;
+  error?: string;
+}
+
 export class FactoryClient {
   private api: AxiosInstance;
 
@@ -162,6 +174,30 @@ export class FactoryClient {
   }> {
     const res = await this.api.get('/stats');
     return res.data || { tenants: 0, agents: 0, services: 0, credentials: 0 };
+  }
+
+  // Code Conversion
+  async submitCodeConversion(sourceLanguage: 'swift' | 'kotlin', sourceCode: string): Promise<ConversionTask> {
+    const res = await this.api.post('/conversions', {
+      sourceLanguage,
+      sourceCode,
+    });
+    return res.data;
+  }
+
+  async getConversion(id: string): Promise<ConversionTask> {
+    const res = await this.api.get(`/conversions/${id}`);
+    return res.data;
+  }
+
+  async updateConversion(id: string, updates: Partial<ConversionTask>): Promise<ConversionTask> {
+    const res = await this.api.patch(`/conversions/${id}`, updates);
+    return res.data;
+  }
+
+  async listConversions(): Promise<ConversionTask[]> {
+    const res = await this.api.get('/conversions');
+    return res.data?.conversions || [];
   }
 }
 

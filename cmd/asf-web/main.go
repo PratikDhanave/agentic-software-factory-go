@@ -164,6 +164,10 @@ func (s *webServer) routes() http.Handler {
 	apiMux.HandleFunc("/api/jobs/list", handlers.HandleJobsList)
 	apiMux.HandleFunc("/api/audit/log", handlers.HandleAuditLog)
 
+	// Code Conversion Endpoints
+	apiMux.HandleFunc("/api/conversions", handlers.HandleConversions)
+	apiMux.HandleFunc("/api/conversions/", handlers.HandleConversionByID)
+
 	mux.Handle("/api/", webguard.Guard(apiMux, "/api/"))
 	return corsMiddleware(mux)
 }

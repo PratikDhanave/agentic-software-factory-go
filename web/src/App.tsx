@@ -12,6 +12,7 @@ import Policies from './pages/Policies';
 import Logs from './pages/Logs';
 import Projects from './pages/Projects';
 import Issues from './pages/Issues';
+import CodeConverter from './pages/CodeConverter';
 
 export default function App() {
   const loadStats = useStore((state) => state.loadStats);
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="/logs" element={<Logs />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/issues" element={<Issues />} />
+          <Route path="/converter" element={<CodeConverter />} />
         </Routes>
       </Layout>
     </Router>

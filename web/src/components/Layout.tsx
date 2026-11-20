@@ -12,6 +12,7 @@ import {
   Menu,
   Trello,
   BookOpen,
+  Zap,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -116,6 +117,11 @@ export default function Layout({ children }: LayoutProps) {
             to="/issues"
             icon={<BookOpen size={20} />}
             label="Issues"
+          />
+          <NavLink
+            to="/converter"
+            icon={<Zap size={20} />}
+            label="Code Converter"
           />
         </nav>
 
